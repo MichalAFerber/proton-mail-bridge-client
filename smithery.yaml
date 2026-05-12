@@ -1,0 +1,43 @@
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    required:
+      - username
+      - password
+    properties:
+      username:
+        type: string
+        description: Your Proton Mail address (e.g. you@proton.me)
+      password:
+        type: string
+        description: Proton Bridge password (not your account password — find it in the Bridge app)
+      imapHost:
+        type: string
+        description: Bridge IMAP host (default 127.0.0.1)
+        default: "127.0.0.1"
+      imapPort:
+        type: string
+        description: Bridge IMAP port (default 1143)
+        default: "1143"
+      smtpHost:
+        type: string
+        description: Bridge SMTP host (default 127.0.0.1)
+        default: "127.0.0.1"
+      smtpPort:
+        type: string
+        description: Bridge SMTP port (default 1025)
+        default: "1025"
+  commandFunction: |-
+    (config) => ({
+      command: "node",
+      args: ["dist/index.js"],
+      env: {
+        PROTONMAIL_USERNAME: config.username,
+        PROTONMAIL_PASSWORD: config.password,
+        PROTONMAIL_IMAP_HOST: config.imapHost || "127.0.0.1",
+        PROTONMAIL_IMAP_PORT: config.imapPort || "1143",
+        PROTONMAIL_SMTP_HOST: config.smtpHost || "127.0.0.1",
+        PROTONMAIL_SMTP_PORT: config.smtpPort || "1025"
+      }
+    })
