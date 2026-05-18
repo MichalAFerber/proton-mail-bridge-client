@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 
+import { exec } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { buildConfigFromEnv, createServer } from "./index.js";
+import { SimpleIMAPService } from "./services/simple-imap-service.js";
 import type { EmailAddress, EmailDetail, EmailSummary, ProtonMailConfig, SearchEmailsInput } from "./types/index.js";
 import { ensureMailboxWriteAllowed, ensureSendAllowed, sanitizeRuntimeConfig } from "./utils/runtime-policy.js";
 import { isValidEmail, lowerCaseAddress, parseEmails, ensureValidEmails } from "./utils/helpers.js";
@@ -114,6 +117,7 @@ function printHelp(): void {
       "  contacts               Contacts ranked by interaction volume",
       "  volume-trends          Daily message counts (--days, default 30)",
       "  watch                  Wait for mailbox changes via IMAP IDLE (--timeout)",
+      "  notify                 Daemon: watch INBOX and send a system notification on new mail (--folder --timeout)",
       "  drafts                 List local drafts",
       "  remote-drafts          List drafts in the Proton Drafts mailbox",
       "  draft-create           Create a draft (--to --subject --body or stdin)",
@@ -1210,6 +1214,91 @@ async function runWatch(parsed: ParsedCliArgs): Promise<void> {
   });
 }
 
+async function sendSystemNotification(title: string, body: string): Promise<void> {
+  const execAsync = promisify(exec);
+  try {
+    if (process.platform === "darwin") {
+      const t = title.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const b = body.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      await execAsync(`osascript -e 'display notification "${b}" with title "${t}"'`);
+    } else if (process.platform === "linux") {
+      const { spawn } = await import("node:child_process");
+      await new Promise<void>((resolve) => {
+        const proc = spawn("notify-send", [title, body], { stdio: "ignore" });
+        proc.on("close", () => { resolve(); });
+        proc.on("error", () => { resolve(); }); // notify-send may not be installed
+      });
+    }
+    // Windows: no built-in toast without extra deps — stdout line is the fallback
+  } catch {
+    // Silent — stdout already carries the event
+  }
+}
+
+async function runNotify(parsed: ParsedCliArgs): Promise<void> {
+  const folder = getStringFlag(parsed.flags, "folder") || "INBOX";
+  const timeoutSeconds = getNumberFlag(parsed.flags, "timeout", 30);
+
+  const config = buildConfigFromEnv();
+  const imapService = new SimpleIMAPService(config);
+
+  let running = true;
+  let previousCount: number | undefined;
+
+  const shutdown = () => { running = false; };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
+  process.stderr.write(`[notify] Watching ${folder} for new mail (IMAP IDLE). Ctrl+C to stop.\n`);
+
+  while (running) {
+    try {
+      const result = await imapService.waitForMailboxChanges({
+        folder,
+        timeoutMs: timeoutSeconds * 1000,
+      });
+
+      if (!running) break;
+
+      if (result.changed) {
+        const existsEvent = result.events.find((e) => e["type"] === "exists");
+        if (existsEvent) {
+          const newCount = typeof existsEvent["count"] === "number" ? (existsEvent["count"] as number) : undefined;
+          const delta =
+            previousCount !== undefined && newCount !== undefined && newCount > previousCount
+              ? newCount - previousCount
+              : undefined;
+          previousCount = newCount ?? previousCount;
+
+          const n = delta ?? 1;
+          const body = `${n} new message${n !== 1 ? "s" : ""} in ${folder}`;
+          await sendSystemNotification("Proton Mail", body);
+          process.stdout.write(
+            JSON.stringify({ event: "new_mail", folder, count: n, at: result.checkedAt }) + "\n",
+          );
+        } else {
+          // flags / expunge only — track count but don't notify
+          const existsOnAny = result.events.find((e) => typeof e["count"] === "number");
+          if (existsOnAny) previousCount = existsOnAny["count"] as number;
+        }
+      }
+    } catch (error) {
+      if (!running) break;
+      const msg = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[notify] Watch error: ${msg}\n`);
+      // Simple backoff before retrying
+      await new Promise<void>((resolve) => { setTimeout(resolve, 15_000).unref(); });
+    }
+  }
+
+  try {
+    await imapService.disconnect();
+  } catch {
+    // ignore
+  }
+  process.stderr.write("[notify] Stopped.\n");
+}
+
 async function runTestEmail(parsed: ParsedCliArgs): Promise<void> {
   const to = parsed.positionals[0] || getStringFlag(parsed.flags, "to");
   if (!to) throw new Error("test-email requires a recipient address");
@@ -1591,6 +1680,9 @@ export async function main(): Promise<void> {
       return;
     case "watch":
       await runWatch(parsed);
+      return;
+    case "notify":
+      await runNotify(parsed);
       return;
     case "test-email":
       await runTestEmail(parsed);

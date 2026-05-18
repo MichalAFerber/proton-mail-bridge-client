@@ -139,6 +139,29 @@ proton-mail-bridge-client status
 proton-mail-bridge-client sync --folder INBOX --limit 150
 ```
 
+### Ambient notifications
+
+Run as a background daemon — sends a system notification (macOS / Linux) whenever new mail arrives:
+
+```bash
+# Foreground (Ctrl+C to stop)
+proton-mail-bridge-client notify
+
+# Background (macOS / Linux)
+proton-mail-bridge-client notify &
+
+# Custom folder and idle timeout
+proton-mail-bridge-client notify --folder INBOX --timeout 60
+```
+
+Each notification event is also written as a JSON line to stdout:
+
+```json
+{"event":"new_mail","folder":"INBOX","count":2,"at":"2026-05-18T14:32:01.000Z"}
+```
+
+Uses IMAP IDLE — no polling, no extra network requests between events. Reconnects automatically on transient errors.
+
 ### MCP tool passthrough
 
 Any MCP tool is also callable directly from the CLI:
