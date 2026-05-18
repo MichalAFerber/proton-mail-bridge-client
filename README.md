@@ -33,6 +33,8 @@ Default local Bridge addresses: IMAP `127.0.0.1:1143`, SMTP `127.0.0.1:1025`
 
 ## Install
 
+> **Before running `npm run build`:** configure your credentials first — see [Environment](#environment) below. The build step connects to Proton Bridge to verify connectivity and will fail without credentials set.
+
 ```bash
 git clone https://github.com/googlarz/proton-mail-bridge-client.git
 cd proton-mail-bridge-client
@@ -219,6 +221,10 @@ npm run update:claude-desktop
 
 ### Manual Claude Desktop config
 
+Three credential methods are supported. Use whichever fits your setup:
+
+**Option 1 — Environment variables (simplest):**
+
 ```json
 {
   "mcpServers": {
@@ -229,6 +235,52 @@ npm run update:claude-desktop
       "env": {
         "PROTONMAIL_USERNAME": "you@proton.me",
         "PROTONMAIL_PASSWORD": "your-bridge-password",
+        "PROTONMAIL_IMAP_HOST": "127.0.0.1",
+        "PROTONMAIL_IMAP_PORT": "1143",
+        "PROTONMAIL_IMAP_SECURE": "false",
+        "PROTONMAIL_SMTP_HOST": "127.0.0.1",
+        "PROTONMAIL_SMTP_PORT": "1025"
+      }
+    }
+  }
+}
+```
+
+**Option 2 — File-based secrets (credentials in files, not config):**
+
+```json
+{
+  "mcpServers": {
+    "proton-mail-bridge": {
+      "command": "node",
+      "args": ["/path/to/runtime/dist/index.js"],
+      "cwd": "/path/to/runtime",
+      "env": {
+        "PROTONMAIL_USERNAME_FILE": "/path/to/username.txt",
+        "PROTONMAIL_PASSWORD_FILE": "/path/to/password.txt",
+        "PROTONMAIL_IMAP_HOST": "127.0.0.1",
+        "PROTONMAIL_IMAP_PORT": "1143",
+        "PROTONMAIL_IMAP_SECURE": "false",
+        "PROTONMAIL_SMTP_HOST": "127.0.0.1",
+        "PROTONMAIL_SMTP_PORT": "1025"
+      }
+    }
+  }
+}
+```
+
+**Option 3 — Command-based secrets (recommended for `pass`, `gopass`, or any secret manager):**
+
+```json
+{
+  "mcpServers": {
+    "proton-mail-bridge": {
+      "command": "node",
+      "args": ["/path/to/runtime/dist/index.js"],
+      "cwd": "/path/to/runtime",
+      "env": {
+        "PROTONMAIL_USERNAME_COMMAND": "pass proton/username",
+        "PROTONMAIL_PASSWORD_COMMAND": "pass proton/password",
         "PROTONMAIL_IMAP_HOST": "127.0.0.1",
         "PROTONMAIL_IMAP_PORT": "1143",
         "PROTONMAIL_IMAP_SECURE": "false",
@@ -269,6 +321,27 @@ On macOS, `better-sqlite3` must be a native binary built for the current machine
 | CLI access | No | Full parity with MCP |
 | Original message links | Better | MCP resource links only |
 | Native threads/labels | Gmail-native | Reconstructed from IMAP |
+
+## Example Claude Workflows
+
+Once connected, ask Claude anything. Some prompts that work well:
+
+**Morning triage**
+> "Give me a digest of my inbox. Flag anything that needs a reply today and anything that looks like a bill or invoice."
+
+**Inbox zero session**
+> "Go through my unread emails from the past 3 days. Archive newsletters, trash anything promotional, and tell me what's left that needs action."
+
+**Folder filing**
+> "Find all emails from stripe.com and move them to Folders/Receipts. Create the folder if it doesn't exist."
+
+**Meeting prep**
+> "I have a call with alice@example.com in an hour. Pull up our last 5 email threads and summarise the open items."
+
+**Draft review**
+> "Show me my drafts, pick the oldest one, and suggest a better subject line and closing paragraph."
+
+> **Tip:** If Claude needs to create a folder before moving emails, remind it to use `Folders/Name` (not just `Name`) — that's the Proton Bridge namespace for real folders vs. labels.
 
 ## Tool Surface
 
