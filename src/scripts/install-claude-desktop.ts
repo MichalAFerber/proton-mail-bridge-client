@@ -186,9 +186,13 @@ function getNpmExecutable(): string {
 }
 
 async function installRuntimeDependencies(runtimeDir: string): Promise<void> {
+  // On Windows, .cmd files (npm.cmd) require shell: true — execFile cannot run them directly.
+  const shellOpts = process.platform === "win32" ? { shell: true } : {};
+
   await execFileAsync(getNpmExecutable(), ["ci", "--omit=dev", "--ignore-scripts"], {
     cwd: runtimeDir,
     env: process.env,
+    ...shellOpts,
   });
 
   // better-sqlite3 is native; rebuild it in the staged runtime so Claude Desktop
@@ -196,6 +200,7 @@ async function installRuntimeDependencies(runtimeDir: string): Promise<void> {
   await execFileAsync(getNpmExecutable(), ["rebuild", "better-sqlite3"], {
     cwd: runtimeDir,
     env: process.env,
+    ...shellOpts,
   });
 }
 
