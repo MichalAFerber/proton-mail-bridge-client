@@ -16,7 +16,7 @@ class ProtonMailBridgeClient < Formula
   url "https://registry.npmjs.org/proton-mail-bridge-client/-/proton-mail-bridge-client-1.11.0.tgz"
   # Update sha256 after npm publish:
   #   curl -sL https://registry.npmjs.org/proton-mail-bridge-client/-/proton-mail-bridge-client-1.11.0.tgz | shasum -a 256
-  sha256 "REPLACE_WITH_SHA256_AFTER_NPM_PUBLISH"
+  sha256 "9109c7532cc05d3f1d689f2ce538e4d5ed2bdbe3"
   license "MIT"
 
   depends_on "node"
