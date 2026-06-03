@@ -1,6 +1,6 @@
 {
   "name": "proton-mail-bridge-client",
-  "version": "1.10.1",
+  "version": "1.11.0",
   "description": "Proton Mail Bridge Client — full-featured CLI and Claude Desktop MCP for Proton Mail via Proton Bridge. Read, search, send, draft, archive, manage folders, and more.",
   "type": "module",
   "packageManager": "npm@10.9.3",
@@ -81,14 +81,8 @@
   },
   "files": [
     "dist/**/*",
-    "Dockerfile",
-    ".dockerignore",
-    "docker/**/*",
     "README.md",
-    "CLAUDE-DESKTOP-PACKAGING.md",
-    "FINAL-VALIDATION.md",
     "LICENSE",
-    "package.json",
     "glama.json"
   ],
   "publishConfig": {

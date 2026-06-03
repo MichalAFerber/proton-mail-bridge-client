@@ -23,6 +23,43 @@ Proton Mail Bridge Client gives you two ways to use Proton Mail programmatically
 
 Both surfaces share the same backend: Proton Bridge IMAP and SMTP, a local SQLite index, and an audit log. No hosted relay, no remote URL, no cloud dependency beyond your own Proton account.
 
+## Why CLI?
+
+Most Proton Mail MCPs are MCP-only. This one ships a full CLI — the same 40+ commands, all in the terminal, no Claude required.
+
+**Pipe and script:**
+
+```bash
+# Morning digest to a file
+proton-mail-bridge-client digest --json > ~/morning-mail.json
+
+# Finance automation — pull every Stripe subject in seconds
+proton-mail-bridge-client search --from stripe.com --json | jq '.[].subject'
+
+# Pipe a script's output directly into an email
+echo "Deploy complete on $(hostname) at $(date)" \
+  | proton-mail-bridge-client send --to alerts@example.com --subject "Deploy done"
+```
+
+**Cron:**
+
+```bash
+# Scheduled digest every weekday at 8am
+0 8 * * 1-5 proton-mail-bridge-client digest >> ~/mail-log.txt
+```
+
+**One-liners:**
+
+```bash
+# Live watch: notify on any new mail from your bank
+proton-mail-bridge-client search --live --from bank.com
+
+# Count unread in INBOX
+proton-mail-bridge-client emails --folder INBOX --json | jq '[.[] | select(.isRead == false)] | length'
+```
+
+No other Proton Mail MCP has a CLI. If you want to automate mail outside of Claude, this is the only option.
+
 ## Prerequisites
 
 - Node.js 18+
@@ -204,6 +241,7 @@ export PROTONMAIL_READ_ONLY='false'
 export PROTONMAIL_ALLOW_SEND='true'
 export PROTONMAIL_ALLOW_REMOTE_DRAFT_SYNC='true'
 export PROTONMAIL_ALLOWED_ACTIONS='mark_read,mark_unread,star,unstar,archive,trash,restore'
+export PROTONMAIL_CONFIRM_DESTRUCTIVE='false'
 export PROTONMAIL_AUTO_SYNC='true'
 export PROTONMAIL_STARTUP_SYNC='true'
 export PROTONMAIL_SYNC_INTERVAL_MINUTES='5'
@@ -326,6 +364,7 @@ On macOS, `better-sqlite3` must be a native binary built for the current machine
 - `PROTONMAIL_READ_ONLY=true` disables all write operations.
 - `PROTONMAIL_ALLOW_SEND=false` disables SMTP sends without affecting other writes.
 - `PROTONMAIL_ALLOWED_ACTIONS` controls which mailbox mutations are permitted.
+- `PROTONMAIL_CONFIRM_DESTRUCTIVE=true` requires `confirmed: true` on `send_email`, `reply_to_email`, `forward_email`, `send_draft`, and `delete_email` — Claude will pause and ask before executing irreversible operations.
 - `batch_email_action` and `apply_thread_action` both support `dryRun: true`.
 - Supports `*_FILE` and `*_COMMAND` secrets so raw credentials never appear in config or shell history.
 - System folders (INBOX, Sent, Trash, Spam, Archive, All Mail) are guarded against accidental deletion.

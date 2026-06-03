@@ -72,3 +72,15 @@ export function ensureMailboxWriteAllowed(runtime: ProtonRuntimeConfig): void {
     throw new Error("Mailbox write operations are disabled because the server is running in read-only mode.");
   }
 }
+
+export function ensureDestructiveConfirmed(
+  runtime: ProtonRuntimeConfig,
+  confirmed: boolean | undefined,
+  description: string,
+): void {
+  if (!runtime.confirmDestructive) return;
+  if (confirmed === true) return;
+  throw new Error(
+    `Confirmation required: ${description}\n\nThis action is irreversible. Call this tool again with confirmed: true after asking the user to confirm.`,
+  );
+}

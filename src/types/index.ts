@@ -333,6 +333,7 @@ export interface ProtonRuntimeConfig {
   autoSyncLimitPerFolder: number;
   idleWatchEnabled: boolean;
   idleMaxSeconds: number;
+  confirmDestructive: boolean;
 }
 
 export interface BackgroundSyncStatus {

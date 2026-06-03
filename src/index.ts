@@ -47,6 +47,7 @@ import {
 } from "./utils/helpers.js";
 import { logger } from "./utils/logger.js";
 import {
+  ensureDestructiveConfirmed,
   ensureEmailActionAllowed,
   ensureMailboxWriteAllowed,
   ensureRemoteDraftSyncAllowed,
@@ -116,6 +117,7 @@ const TOOLS = [
             required: ["filename", "content"],
           },
         },
+        confirmed: { type: "boolean", description: "Set to true to confirm this irreversible send when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
       },
       required: ["to", "subject", "body"],
     },
@@ -159,6 +161,7 @@ const TOOLS = [
             required: ["filename", "content"],
           },
         },
+        confirmed: { type: "boolean", description: "Set to true to confirm this irreversible send when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
       },
       required: ["emailId", "body"],
     },
@@ -190,6 +193,7 @@ const TOOLS = [
             required: ["filename", "content"],
           },
         },
+        confirmed: { type: "boolean", description: "Set to true to confirm this irreversible send when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
       },
       required: ["emailId", "to"],
     },
@@ -397,6 +401,7 @@ const TOOLS = [
       type: "object",
       properties: {
         draftId: { type: "string", description: "Draft id returned by create_draft, list_drafts, or a create_*_draft call." },
+        confirmed: { type: "boolean", description: "Set to true to confirm this irreversible send when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
       },
       required: ["draftId"],
     },
@@ -585,6 +590,7 @@ const TOOLS = [
       type: "object",
       properties: {
         emailId: { type: "string", description: "Composite email id in FOLDER::UID format, as returned by get_emails or search_emails." },
+        confirmed: { type: "boolean", description: "Set to true to confirm this permanent deletion when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled. Cannot be undone." },
       },
       required: ["emailId"],
     },
@@ -2061,6 +2067,7 @@ export function buildConfigFromEnv(): ProtonMailConfig {
   const syncInterval = parseIntegerEnv("PROTONMAIL_SYNC_INTERVAL_MINUTES", 5, 1, 24 * 60);
   const idleWatchEnabled = parseBooleanEnv("PROTONMAIL_IDLE_WATCH", autoSync);
   const idleMaxSeconds = parseIntegerEnv("PROTONMAIL_IDLE_MAX_SECONDS", 30, 5, 300);
+  const confirmDestructive = parseBooleanEnv("PROTONMAIL_CONFIRM_DESTRUCTIVE", false);
 
   logger.setDebugMode(debug);
 
@@ -2096,6 +2103,7 @@ export function buildConfigFromEnv(): ProtonMailConfig {
       autoSyncLimitPerFolder: parseIntegerEnv("PROTONMAIL_AUTO_SYNC_LIMIT_PER_FOLDER", 100, 1, 500),
       idleWatchEnabled,
       idleMaxSeconds,
+      confirmDestructive,
     },
   };
 }
@@ -2273,6 +2281,7 @@ export function createServer(
     try {
       switch (name) {
         case "send_email": {
+          ensureDestructiveConfirmed(config.runtime, normalizeBoolean(args.confirmed, false), `Send email to ${String(args.to ?? "?")} — "${String(args.subject ?? "?")}"`);
           ensureSendAllowed(config.runtime);
           const to = parseEmails(requireString(args, "to"));
           const cc = parseEmails(optionalString(args, "cc"));
@@ -2335,6 +2344,7 @@ export function createServer(
         }
 
         case "reply_to_email": {
+          ensureDestructiveConfirmed(config.runtime, normalizeBoolean(args.confirmed, false), `Reply to email ${String(args.emailId ?? "?")}`);
           ensureSendAllowed(config.runtime);
           const detail = await imapService.getEmailById(requireString(args, "emailId"));
           const body = requireString(args, "body");
@@ -2381,6 +2391,7 @@ export function createServer(
         }
 
         case "forward_email": {
+          ensureDestructiveConfirmed(config.runtime, normalizeBoolean(args.confirmed, false), `Forward email ${String(args.emailId ?? "?")} to ${String(args.to ?? "?")}`);
           ensureSendAllowed(config.runtime);
           const detail = await imapService.getEmailById(requireString(args, "emailId"));
           const to = parseEmails(requireString(args, "to"));
@@ -2773,6 +2784,7 @@ export function createServer(
         }
 
         case "send_draft": {
+          ensureDestructiveConfirmed(config.runtime, normalizeBoolean(args.confirmed, false), `Send draft ${String(args.draftId ?? "?")}`);
           ensureSendAllowed(config.runtime);
           const draft = await draftStore.getDraft(requireString(args, "draftId"));
           ensureValidEmails(draft.to, "to");
@@ -3048,6 +3060,7 @@ export function createServer(
         }
 
         case "delete_email":
+          ensureDestructiveConfirmed(config.runtime, normalizeBoolean(args.confirmed, false), `Permanently delete ${String(args.emailId ?? "?")} (cannot be recovered)`);
           ensureMailboxWriteAllowed(config.runtime);
           return createTextResult(
             await withAudit(auditService, name, args, async () =>
