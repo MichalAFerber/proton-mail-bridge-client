@@ -15,6 +15,16 @@ import { getClaudeDesktopInstallStatus } from "./scripts/check-claude-desktop.js
 import { installClaudeDesktopConfig } from "./scripts/install-claude-desktop.js";
 import { runClaudeDesktopSetupWizard } from "./scripts/setup-claude-desktop.js";
 
+let _pkgVersion: string | undefined;
+async function getPkgVersion(): Promise<string> {
+  if (_pkgVersion) return _pkgVersion;
+  const pkg = JSON.parse(
+    await readFile(new URL("../package.json", import.meta.url), "utf8"),
+  ) as { version: string };
+  _pkgVersion = pkg.version;
+  return _pkgVersion;
+}
+
 type CliFlags = Record<string, string | boolean>;
 
 export interface ParsedCliArgs {
@@ -135,8 +145,10 @@ function printHelp(): void {
       "  claude install         Install or update the Claude Desktop runtime",
       "  claude check           Check Claude Desktop integration status",
       "  claude update          Alias for claude install",
+      "  setup-claude-desktop   Run the Claude Desktop setup wizard (works from any install)",
       "",
       "Global flags:",
+      "  --version, -v          Print version and exit",
       "  --json                 Print machine-readable JSON",
       "",
       "Search flags:",
@@ -294,7 +306,7 @@ async function withMcpClient<T>(run: (client: Client) => Promise<T>): Promise<T>
   const client = new Client(
     {
       name: "proton-mail-bridge-cli",
-      version: "1.6.0",
+      version: await getPkgVersion(),
     },
     {
       capabilities: {},
@@ -1552,11 +1564,24 @@ async function runClaude(parsed: ParsedCliArgs): Promise<void> {
 export async function main(): Promise<void> {
   const parsed = parseCliArgs(process.argv.slice(2));
 
+  // --version is parsed as a flag by the arg parser, not a positional command
+  if (parsed.flags["version"] || parsed.flags["v"]) {
+    process.stdout.write(`proton-mail-bridge-client ${await getPkgVersion()}\n`);
+    return;
+  }
+
   switch (parsed.command) {
     case "help":
     case "--help":
     case "-h":
       printHelp();
+      return;
+    case "-v":
+    case "version":
+      process.stdout.write(`proton-mail-bridge-client ${await getPkgVersion()}\n`);
+      return;
+    case "setup-claude-desktop":
+      await runClaudeDesktopSetupWizard();
       return;
     case "status":
       await runStatus(parsed);

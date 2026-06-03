@@ -12,6 +12,7 @@ export function sanitizeRuntimeConfig(runtime: ProtonRuntimeConfig): Record<stri
     autoSyncLimitPerFolder: runtime.autoSyncLimitPerFolder,
     idleWatchEnabled: runtime.idleWatchEnabled,
     idleMaxSeconds: runtime.idleMaxSeconds,
+    confirmDestructive: runtime.confirmDestructive,
   };
 }
 

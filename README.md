@@ -70,7 +70,29 @@ Default local Bridge addresses: IMAP `127.0.0.1:1143`, SMTP `127.0.0.1:1025`
 
 ## Install
 
-> **Before running `npm run build`:** configure your credentials first — see [Environment](#environment) below. The build step connects to Proton Bridge to verify connectivity and will fail without credentials set.
+**From npm (recommended):**
+
+```bash
+npm install -g proton-mail-bridge-client
+```
+
+**From Homebrew:**
+
+```bash
+brew tap googlarz/tap
+brew install proton-mail-bridge-client
+```
+
+**Set up Claude Desktop** (interactive wizard, works from any install):
+
+```bash
+proton-mail-bridge-client setup-claude-desktop
+```
+
+<details>
+<summary>Development / source install</summary>
+
+> **Before running `npm run build`:** configure your credentials first — see [Environment](#environment) below.
 
 ```bash
 git clone https://github.com/googlarz/proton-mail-bridge-client.git
@@ -81,7 +103,7 @@ npm run build
 
 After install, the `proton-mail-bridge-client` (and `proton-mail-bridge`) binary is available from the repo.
 
-For a system-wide install: `npm install -g .`
+</details>
 
 ## CLI
 
@@ -384,6 +406,21 @@ On macOS, `better-sqlite3` must be a native binary built for the current machine
 | Original message links | Better | MCP resource links only |
 | Native threads/labels | Gmail-native | Reconstructed from IMAP |
 
+## Recommended System Prompt
+
+Add this to Claude Desktop's system prompt (Settings → Claude Desktop → System Prompt) for safer default behaviour:
+
+```
+You have access to my Proton Mail inbox via the proton-mail-bridge tool.
+
+Rules:
+- Always use dryRun: true before any batch operation (batch_email_action, apply_thread_action).
+- Before calling send_email, reply_to_email, or forward_email, summarise what you are about to send and ask me to confirm.
+- Before calling delete_email, confirm with me — deletion is permanent.
+- Prefer create_draft over send_email when composing from scratch.
+- Use get_inbox_digest or get_actionable_threads as your starting point for triage sessions.
+```
+
 ## Example Claude Workflows
 
 Once connected, ask Claude anything. Some prompts that work well:
@@ -439,6 +476,10 @@ Once connected, ask Claude anything. Some prompts that work well:
 - Background sync and IMAP IDLE keep the index warm but depend on Bridge staying up.
 - `search_indexed_emails` supports `from:`, `to:`, `subject:`, `label:`, `domain:` shortcuts.
 - Draft sync is best-effort — local draft is always preserved even if remote sync fails.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 

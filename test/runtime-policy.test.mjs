@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  ensureDestructiveConfirmed,
   ensureEmailActionAllowed,
   ensureSendAllowed,
   resolveRemoteDraftSync,
@@ -19,6 +20,7 @@ function createRuntime(overrides = {}) {
     autoSyncLimitPerFolder: 100,
     idleWatchEnabled: true,
     idleMaxSeconds: 30,
+    confirmDestructive: false,
     ...overrides,
   };
 }
@@ -57,5 +59,30 @@ test("sanitized runtime config excludes secrets and preserves policy flags", () 
     autoSyncLimitPerFolder: 100,
     idleWatchEnabled: true,
     idleMaxSeconds: 30,
+    confirmDestructive: false,
   });
+});
+
+test("confirmDestructive: passes when flag is off regardless of confirmed arg", () => {
+  const runtime = createRuntime({ confirmDestructive: false });
+  assert.doesNotThrow(() => ensureDestructiveConfirmed(runtime, undefined, "send email"));
+  assert.doesNotThrow(() => ensureDestructiveConfirmed(runtime, false, "send email"));
+  assert.doesNotThrow(() => ensureDestructiveConfirmed(runtime, true, "send email"));
+});
+
+test("confirmDestructive: throws when flag is on and confirmed is not true", () => {
+  const runtime = createRuntime({ confirmDestructive: true });
+  assert.throws(
+    () => ensureDestructiveConfirmed(runtime, undefined, "send email to bob@example.com"),
+    /Confirmation required/i,
+  );
+  assert.throws(
+    () => ensureDestructiveConfirmed(runtime, false, "delete INBOX::42"),
+    /Confirmation required/i,
+  );
+});
+
+test("confirmDestructive: passes when flag is on and confirmed is true", () => {
+  const runtime = createRuntime({ confirmDestructive: true });
+  assert.doesNotThrow(() => ensureDestructiveConfirmed(runtime, true, "send email to bob@example.com"));
 });
