@@ -379,6 +379,41 @@ Three credential methods are supported. Use whichever fits your setup:
 
 On macOS, `better-sqlite3` must be a native binary built for the current machine. The installer handles this automatically. If you restore from another environment or see a native-module crash, run `npm run update:claude-desktop`.
 
+## Cline (VS Code) Setup
+
+Cline uses the same MCP protocol as Claude Desktop. After installing the package globally (`npm install -g proton-mail-bridge-client`), open Cline's MCP settings and add an entry.
+
+**Find the settings file:**
+- Open VS Code → Cline extension panel → click the MCP servers icon → "Edit MCP Settings"
+- Or edit directly: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` (macOS)
+
+**Add the server:**
+
+```json
+{
+  "mcpServers": {
+    "proton-mail-bridge": {
+      "command": "proton-mail-bridge-mcp",
+      "env": {
+        "PROTONMAIL_USERNAME": "you@proton.me",
+        "PROTONMAIL_PASSWORD": "your-bridge-password",
+        "PROTONMAIL_IMAP_HOST": "127.0.0.1",
+        "PROTONMAIL_IMAP_PORT": "1143",
+        "PROTONMAIL_IMAP_SECURE": "false",
+        "PROTONMAIL_SMTP_HOST": "127.0.0.1",
+        "PROTONMAIL_SMTP_PORT": "1025"
+      }
+    }
+  }
+}
+```
+
+`proton-mail-bridge-mcp` is the MCP server binary installed alongside the CLI. It exposes the full tool surface over stdio — the same tools Claude Desktop uses.
+
+For file-based or command-based credentials (recommended), use the same `PROTONMAIL_USERNAME_FILE` / `PROTONMAIL_PASSWORD_COMMAND` pattern shown in the [Manual Claude Desktop config](#manual-claude-desktop-config) section.
+
+After saving, reload the Cline extension. Proton Mail tools will appear in Cline's tool list.
+
 ## Trust & Safety
 
 - Runs entirely locally — no hosted relay, no remote URL.
