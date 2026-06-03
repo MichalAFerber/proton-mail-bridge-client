@@ -1,11 +1,4 @@
 # Homebrew formula for proton-mail-bridge-client
-#
-# To use this:
-# 1. Publish the npm package first: npm publish
-# 2. Create a new GitHub repo: googlarz/homebrew-tap
-# 3. Copy this file to: Formula/proton-mail-bridge-client.rb in that repo
-# 4. Update the sha256 below (run: curl -s https://registry.npmjs.org/proton-mail-bridge-client/1.11.0 | jq .dist.shasum)
-#
 # Users install with: brew install googlarz/tap/proton-mail-bridge-client
 
 require "language/node"
@@ -13,10 +6,8 @@ require "language/node"
 class ProtonMailBridgeClient < Formula
   desc "Full-featured CLI and Claude Desktop MCP for Proton Mail via Proton Bridge"
   homepage "https://github.com/googlarz/proton-mail-bridge-client"
-  url "https://registry.npmjs.org/proton-mail-bridge-client/-/proton-mail-bridge-client-1.11.0.tgz"
-  # Update sha256 after npm publish:
-  #   curl -sL https://registry.npmjs.org/proton-mail-bridge-client/-/proton-mail-bridge-client-1.11.0.tgz | shasum -a 256
-  sha256 "9109c7532cc05d3f1d689f2ce538e4d5ed2bdbe3"
+  url "https://registry.npmjs.org/proton-mail-bridge-client/-/proton-mail-bridge-client-1.11.1.tgz"
+  sha256 "566281095a4789f838ea620909de3461827579ab"
   license "MIT"
 
   depends_on "node"
@@ -40,8 +31,7 @@ class ProtonMailBridgeClient < Formula
   end
 
   test do
-    # Verify the binary runs (exits non-zero without credentials — that's expected)
-    output = shell_output("#{bin}/proton-mail-bridge-client --help 2>&1", 0)
-    assert_match "proton-mail-bridge-client", output
+    output = shell_output("#{bin}/proton-mail-bridge-client --version 2>&1")
+    assert_match "1.11.1", output
   end
 end
