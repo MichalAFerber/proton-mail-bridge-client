@@ -47,6 +47,7 @@ function normalizeData(data: unknown): unknown {
 
 export class Logger {
   private readonly entries: LogEntry[] = [];
+  private _droppedCount = 0;
   private debugMode = false;
   private readonly maxEntries: number;
 
@@ -74,13 +75,16 @@ export class Logger {
     this.log("error", message, context, data);
   }
 
-  getLogs(options?: { level?: LogLevel; limit?: number }): LogEntry[] {
+  getLogs(options?: { level?: LogLevel; limit?: number }): { entries: LogEntry[]; droppedCount: number } {
     const levelThreshold = options?.level ? LEVEL_ORDER[options.level] : 0;
     const limit = options?.limit ?? 100;
 
-    return this.entries
-      .filter((entry) => LEVEL_ORDER[entry.level] >= levelThreshold)
-      .slice(-limit);
+    return {
+      entries: this.entries
+        .filter((entry) => LEVEL_ORDER[entry.level] >= levelThreshold)
+        .slice(-limit),
+      droppedCount: this._droppedCount,
+    };
   }
 
   clear(): void {
@@ -99,6 +103,7 @@ export class Logger {
     this.entries.push(entry);
     if (this.entries.length > this.maxEntries) {
       this.entries.shift();
+      this._droppedCount += 1;
     }
 
     if (level === "debug" && !this.debugMode) {

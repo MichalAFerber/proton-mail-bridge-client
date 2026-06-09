@@ -96,6 +96,7 @@ function printHelp(): void {
       "  create-folder <path>   Create a mailbox folder (e.g. Folders/Receipts)",
       "  rename-folder <p> <p2> Rename a folder (or use --to <newPath>)",
       "  delete-folder <path>   Delete an empty folder",
+      "  empty-folder <folder>  Permanently empty a folder (--confirmed to execute)",
       "  labels                 List normalized labels from the local index",
       "  threads [query]        List normalized threads from the local index",
       "  digest                 Show inbox digest and top actionable threads",
@@ -112,6 +113,8 @@ function printHelp(): void {
       "  star <emailId>         Star an email (--unstar to flip)",
       "  delete <emailId>       Permanently delete an email",
       "  batch <action> <ids…>  Apply action to multiple emails (or --ids)",
+      "  bulk-delete            Delete matching emails (--folder --from --dry-run)",
+      "  bulk-move <folder>     Move matching emails (--folder --from --dry-run)",
       "  send                   Send an email (--to --subject --body or stdin)",
       "  reply <emailId>        Reply to an email (--body or stdin, --reply-all)",
       "  forward <emailId>      Forward an email (--to, optional --body or stdin)",
@@ -124,9 +127,12 @@ function printHelp(): void {
       "  meeting-context <who>  Prep context for a meeting (--domain also accepted)",
       "  stats                  Mailbox counts and analytics sample",
       "  analytics              Detailed mailbox analytics (top senders, busy hours)",
+      "  folder-stats [folder]  Live message stats for a folder",
       "  contacts               Contacts ranked by interaction volume",
       "  volume-trends          Daily message counts (--days, default 30)",
       "  watch                  Wait for mailbox changes via IMAP IDLE (--timeout)",
+      "  clear-cache            Clear in-memory MCP server caches",
+      "  get-logs               Return recent in-memory MCP server logs",
       "  notify                 Daemon: watch INBOX and send a system notification on new mail (--folder --timeout)",
       "  drafts                 List local drafts",
       "  remote-drafts          List drafts in the Proton Drafts mailbox",
@@ -161,6 +167,8 @@ function printHelp(): void {
       "  --to <value>           Filter by recipient",
       "  --subject <value>      Filter by subject",
       "  --domain <value>       Filter by sender domain",
+      "  --dateFrom <value>     Filter from this date/time",
+      "  --dateTo <value>       Filter through this date/time",
       "  --read / --unread      Filter by read state",
       "  --starred / --unstarred Filter by star state",
       "",
@@ -442,6 +450,8 @@ function buildSearchFilters(parsed: ParsedCliArgs): SearchEmailsInput {
     to: getStringFlag(parsed.flags, "to"),
     subject: getStringFlag(parsed.flags, "subject"),
     senderDomain: getStringFlag(parsed.flags, "domain"),
+    dateFrom: getStringFlag(parsed.flags, "dateFrom"),
+    dateTo: getStringFlag(parsed.flags, "dateTo"),
     limit: getNumberFlag(parsed.flags, "limit", 25),
     isRead: isTruthyFlag(parsed.flags.read) ? true : isTruthyFlag(parsed.flags.unread) ? false : undefined,
     isStarred: isTruthyFlag(parsed.flags.starred) ? true : isTruthyFlag(parsed.flags.unstarred) ? false : undefined,
@@ -931,11 +941,11 @@ async function runDelete(parsed: ParsedCliArgs): Promise<void> {
 }
 
 async function runSend(parsed: ParsedCliArgs): Promise<void> {
-  const to = parseEmails(getStringFlag(parsed.flags, "to") || "");
-  const cc = parseEmails(getStringFlag(parsed.flags, "cc") || "");
-  const bcc = parseEmails(getStringFlag(parsed.flags, "bcc") || "");
+  const to = getStringFlag(parsed.flags, "to");
+  const cc = getStringFlag(parsed.flags, "cc");
+  const bcc = getStringFlag(parsed.flags, "bcc");
   const subject = getStringFlag(parsed.flags, "subject");
-  if (to.length === 0) throw new Error("send requires --to");
+  if (!to) throw new Error("send requires --to");
   if (!subject) throw new Error("send requires --subject");
 
   let body = getStringFlag(parsed.flags, "body");
@@ -947,13 +957,21 @@ async function runSend(parsed: ParsedCliArgs): Promise<void> {
   if (!body) throw new Error("send requires --body or body piped via stdin");
 
   const wantJson = isTruthyFlag(parsed.flags.json);
-  await withServices(async ({ config, smtpService }) => {
-    ensureSendAllowed(config.runtime);
-    ensureValidEmails(to, "to");
-    ensureValidEmails(cc, "cc");
-    ensureValidEmails(bcc, "bcc");
-    const result = await smtpService.sendEmail({ to, cc, bcc, subject, body: body!, isHtml: isTruthyFlag(parsed.flags.html) });
-    process.stdout.write(wantJson ? json(result) : `Sent. messageId=${result.messageId ?? "unknown"} accepted=${result.accepted.join(",")}\n`);
+  await withMcpClient(async (client) => {
+    const result = await client.callTool({
+      name: "send_email",
+      arguments: {
+        to,
+        cc,
+        bcc,
+        subject,
+        body,
+        isHtml: isTruthyFlag(parsed.flags.html) || undefined,
+        dryRun: isTruthyFlag(parsed.flags["dry-run"]) || undefined,
+        confirmed: isTruthyFlag(parsed.flags.confirmed) || undefined,
+      },
+    });
+    printToolCallResult(result as Record<string, unknown>, wantJson);
   });
 }
 
@@ -1048,6 +1066,87 @@ async function runDeleteFolder(parsed: ParsedCliArgs): Promise<void> {
     ensureMailboxWriteAllowed(config.runtime);
     const result = await imapService.deleteFolder(path);
     process.stdout.write(wantJson ? json(result) : `Deleted folder: ${result.path}\n`);
+  });
+}
+
+async function runEmptyFolder(parsed: ParsedCliArgs): Promise<void> {
+  const folder = parsed.positionals[0] || getStringFlag(parsed.flags, "folder");
+  if (!folder) throw new Error("empty-folder requires a folder argument");
+  const wantJson = isTruthyFlag(parsed.flags.json);
+  await withMcpClient(async (client) => {
+    const result = await client.callTool({
+      name: "empty_folder",
+      arguments: {
+        folder,
+        confirmed: isTruthyFlag(parsed.flags.confirmed) || undefined,
+      },
+    });
+    printToolCallResult(result as Record<string, unknown>, wantJson);
+  });
+}
+
+async function runBulkDelete(parsed: ParsedCliArgs): Promise<void> {
+  const from = getStringFlag(parsed.flags, "from");
+  const wantJson = isTruthyFlag(parsed.flags.json);
+  await withMcpClient(async (client) => {
+    const result = await client.callTool({
+      name: "bulk_delete",
+      arguments: {
+        folder: getStringFlag(parsed.flags, "folder"),
+        match: from ? { from } : {},
+        dryRun: isTruthyFlag(parsed.flags["dry-run"]) || undefined,
+      },
+    });
+    printToolCallResult(result as Record<string, unknown>, wantJson);
+  });
+}
+
+async function runBulkMove(parsed: ParsedCliArgs): Promise<void> {
+  const targetFolder = parsed.positionals[0] || getStringFlag(parsed.flags, "target-folder");
+  if (!targetFolder) throw new Error("bulk-move requires a target folder argument");
+  const from = getStringFlag(parsed.flags, "from");
+  const wantJson = isTruthyFlag(parsed.flags.json);
+  await withMcpClient(async (client) => {
+    const result = await client.callTool({
+      name: "bulk_move",
+      arguments: {
+        targetFolder,
+        folder: getStringFlag(parsed.flags, "folder"),
+        match: from ? { from } : {},
+        dryRun: isTruthyFlag(parsed.flags["dry-run"]) || undefined,
+      },
+    });
+    printToolCallResult(result as Record<string, unknown>, wantJson);
+  });
+}
+
+async function runClearCache(parsed: ParsedCliArgs): Promise<void> {
+  const wantJson = isTruthyFlag(parsed.flags.json);
+  await withMcpClient(async (client) => {
+    const result = await client.callTool({ name: "clear_cache", arguments: {} });
+    printToolCallResult(result as Record<string, unknown>, wantJson);
+  });
+}
+
+async function runGetLogs(parsed: ParsedCliArgs): Promise<void> {
+  const wantJson = isTruthyFlag(parsed.flags.json);
+  await withMcpClient(async (client) => {
+    const result = await client.callTool({
+      name: "get_logs",
+      arguments: { limit: getNumberFlag(parsed.flags, "limit", 100) },
+    });
+    printToolCallResult(result as Record<string, unknown>, wantJson);
+  });
+}
+
+async function runFolderStats(parsed: ParsedCliArgs): Promise<void> {
+  const wantJson = isTruthyFlag(parsed.flags.json);
+  await withMcpClient(async (client) => {
+    const result = await client.callTool({
+      name: "folder_stats",
+      arguments: { folder: parsed.positionals[0] || getStringFlag(parsed.flags, "folder") },
+    });
+    printToolCallResult(result as Record<string, unknown>, wantJson);
   });
 }
 
@@ -1613,6 +1712,9 @@ export async function main(): Promise<void> {
     case "delete-folder":
       await runDeleteFolder(parsed);
       return;
+    case "empty-folder":
+      await runEmptyFolder(parsed);
+      return;
     case "labels":
       await runLabels(parsed);
       return;
@@ -1691,11 +1793,20 @@ export async function main(): Promise<void> {
     case "batch":
       await runBatch(parsed);
       return;
+    case "bulk-delete":
+      await runBulkDelete(parsed);
+      return;
+    case "bulk-move":
+      await runBulkMove(parsed);
+      return;
     case "stats":
       await runStats(parsed);
       return;
     case "analytics":
       await runAnalytics(parsed);
+      return;
+    case "folder-stats":
+      await runFolderStats(parsed);
       return;
     case "contacts":
       await runContacts(parsed);
@@ -1705,6 +1816,12 @@ export async function main(): Promise<void> {
       return;
     case "watch":
       await runWatch(parsed);
+      return;
+    case "clear-cache":
+      await runClearCache(parsed);
+      return;
+    case "get-logs":
+      await runGetLogs(parsed);
       return;
     case "notify":
       await runNotify(parsed);

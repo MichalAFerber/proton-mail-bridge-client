@@ -1,5 +1,5 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { ImapFlow, type FetchMessageObject, type ListResponse, type SearchObject } from "imapflow";
 import { simpleParser, type ParsedMail } from "mailparser";
 import type {
@@ -55,7 +55,17 @@ const FETCH_DETAIL_QUERY = {
   source: true,
 } as const;
 
+const FETCH_INDEX_QUERY = {
+  uid: true,
+  flags: true,
+  envelope: true,
+  internalDate: true,
+  size: true,
+  bodyStructure: true,
+} as const;
+
 const MAX_ATTACHMENT_TEXT_BYTES = 512_000;
+const UID_VALIDITY_MISMATCH_ERROR = "UID validity mismatch - local index is stale, run sync_emails to refresh";
 
 export function isLikelyAuthenticationError(error: unknown): boolean {
   if (!error) {
@@ -331,6 +341,9 @@ export class SimpleIMAPService {
     changed: boolean;
     events: Array<Record<string, unknown>>;
   }> {
+    // imapflow.preCheck is an internal hook used here to interrupt IDLE early.
+    // If this breaks after an imapflow upgrade, inspect the library's IDLE
+    // implementation for the current cancellation/break mechanism.
     const idleClient = client as unknown as {
       maxIdleTime?: number | false;
       preCheck?: false | (() => Promise<void>);
@@ -603,28 +616,8 @@ export class SimpleIMAPService {
   }
 
   async getEmailById(emailId: string): Promise<EmailDetail> {
-    const { folder, uid } = parseEmailId(emailId);
-
-    return this.withMailbox(folder, true, async (client) => {
-      const message = await client.fetchOne(String(uid), FETCH_DETAIL_QUERY, { uid: true });
-      if (!message) {
-        throw new Error(`Email not found for id ${emailId}`);
-      }
-
-      const summary = this.toSummary(folder, message);
-      const parsed = message.source ? await this.parseSource(message.source) : undefined;
-      const enriched = parsed ? this.enrichSummaryFromParsed(summary, parsed, true) : summary;
-
-      const detail: EmailDetail = {
-        ...enriched,
-        text: parsed?.text || stripHtmlToText(typeof parsed?.html === "string" ? parsed.html : undefined),
-        html: parsed?.html,
-        headers: this.mapHeaders(parsed),
-      };
-
-      this.messageCache.set(detail.id, detail);
-      return detail;
-    });
+    const { detail } = await this.getParsedMailDetail(emailId);
+    return detail;
   }
 
   async searchEmails(input: SearchEmailsInput = {}): Promise<{
@@ -698,11 +691,12 @@ export class SimpleIMAPService {
     saved: AttachmentContentResult[];
     skipped: number;
   }> {
-    const attachmentList = await this.listAttachments(input.emailId);
+    const { parsed } = await this.getParsedMailDetail(input.emailId);
+    const attachments = this.mapParsedAttachmentsWithContent(parsed);
     const saved: AttachmentContentResult[] = [];
     let skipped = 0;
 
-    for (const attachment of attachmentList.attachments) {
+    for (const attachment of attachments) {
       if (!input.includeInline && attachment.isInline) {
         skipped += 1;
         continue;
@@ -733,7 +727,7 @@ export class SimpleIMAPService {
           ? join(resolve(input.outputPath), sanitizeFileName(attachment.filename, attachmentId))
           : input.outputPath;
 
-      saved.push(await this.saveAttachment(input.emailId, attachmentId, targetPath));
+      saved.push(await this.writeAttachmentToPath(input.emailId, attachment, targetPath));
     }
 
     return {
@@ -786,27 +780,7 @@ export class SimpleIMAPService {
     outputPath?: string,
   ): Promise<AttachmentContentResult> {
     const attachment = await this.getParsedAttachment(emailId, attachmentId);
-    const path = await this.resolveAttachmentOutputPath(emailId, attachment, outputPath);
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, attachment.content);
-
-    return {
-      emailId,
-      attachment: {
-        id: attachment.id,
-        filename: attachment.filename,
-        contentType: attachment.contentType,
-        size: attachment.size,
-        disposition: attachment.disposition,
-        cid: attachment.cid,
-        checksum: attachment.checksum,
-        isInline: attachment.isInline,
-        kind: attachment.kind,
-        isCalendarInvite: attachment.isCalendarInvite,
-        isSignature: attachment.isSignature,
-      },
-      outputPath: path,
-    };
+    return this.writeAttachmentToPath(emailId, attachment, outputPath);
   }
 
   /** Re-FETCH flags after a STORE op and return any flags the server silently dropped. */
@@ -831,7 +805,7 @@ export class SimpleIMAPService {
     return notApplied;
   }
 
-  async markEmailRead(emailId: string, isRead = true): Promise<{
+  async markEmailRead(emailId: string, isRead = true, uidValidity?: string): Promise<{
     emailId: string;
     folder: string;
     uid: number;
@@ -842,6 +816,7 @@ export class SimpleIMAPService {
     let notApplied: string[] = [];
 
     await this.withMailbox(folder, false, async (client) => {
+      this.assertMailboxUidValidity(client, uidValidity);
       if (isRead) {
         await client.messageFlagsAdd(String(uid), ["\\Seen"], { uid: true });
       } else {
@@ -854,7 +829,7 @@ export class SimpleIMAPService {
     return { emailId, folder, uid, isRead, notApplied };
   }
 
-  async starEmail(emailId: string, isStarred = true): Promise<{
+  async starEmail(emailId: string, isStarred = true, uidValidity?: string): Promise<{
     emailId: string;
     folder: string;
     uid: number;
@@ -865,6 +840,7 @@ export class SimpleIMAPService {
     let notApplied: string[] = [];
 
     await this.withMailbox(folder, false, async (client) => {
+      this.assertMailboxUidValidity(client, uidValidity);
       if (isStarred) {
         await client.messageFlagsAdd(String(uid), ["\\Flagged"], { uid: true });
       } else {
@@ -877,7 +853,7 @@ export class SimpleIMAPService {
     return { emailId, folder, uid, isStarred, notApplied };
   }
 
-  async moveEmail(emailId: string, targetFolder: string): Promise<{
+  async moveEmail(emailId: string, targetFolder: string, uidValidity?: string): Promise<{
     emailId: string;
     sourceEmailId: string;
     fromFolder: string;
@@ -890,6 +866,7 @@ export class SimpleIMAPService {
     let targetUid: number | undefined;
 
     await this.withMailbox(folder, false, async (client) => {
+      this.assertMailboxUidValidity(client, uidValidity);
       const moved = await client.messageMove(String(uid), targetFolder, { uid: true });
       if (moved === false) {
         throw new Error(`Server did not move email ${emailId} to ${targetFolder}`);
@@ -921,7 +898,7 @@ export class SimpleIMAPService {
     };
   }
 
-  async deleteEmail(emailId: string): Promise<{
+  async deleteEmail(emailId: string, uidValidity?: string): Promise<{
     emailId: string;
     folder: string;
     uid: number;
@@ -930,6 +907,7 @@ export class SimpleIMAPService {
     const { folder, uid } = parseEmailId(emailId);
 
     await this.withMailbox(folder, false, async (client) => {
+      this.assertMailboxUidValidity(client, uidValidity);
       const deleted = await client.messageDelete(String(uid), { uid: true });
       if (!deleted) {
         throw new Error(`Server did not delete email ${emailId}`);
@@ -1013,11 +991,13 @@ export class SimpleIMAPService {
     emailId: string,
     flagsToAdd: string[],
     flagsToRemove: string[],
+    uidValidity?: string,
   ): Promise<{ emailId: string; added: string[]; removed: string[]; notApplied: string[] }> {
     const { folder, uid } = parseEmailId(emailId);
     let notApplied: string[] = [];
 
     await this.withMailbox(folder, false, async (client) => {
+      this.assertMailboxUidValidity(client, uidValidity);
       if (flagsToAdd.length > 0) {
         await client.messageFlagsAdd(String(uid), flagsToAdd, { uid: true });
       }
@@ -1076,6 +1056,10 @@ export class SimpleIMAPService {
   }
 
   async emptyFolder(folder: string): Promise<{ folder: string; deleted: number }> {
+    if (folder.toUpperCase() === "INBOX") {
+      throw new Error("emptyFolder cannot be used on INBOX. Move messages to Trash first.");
+    }
+
     const uids: number[] = await this.withMailbox(folder, true, async (client) => {
       const found = await client.search({ all: true }, { uid: true });
       return Array.isArray(found) ? found : [];
@@ -1162,21 +1146,27 @@ export class SimpleIMAPService {
     let failed = 0;
     const results: BulkOperationResult["results"] = [];
 
-    for (const uid of uids) {
-      const emailId = createEmailId(folder, uid);
+    if (uids.length > 0) {
+      const uidSet = uids.join(",");
       try {
         await this.withMailbox(folder, false, async (client) => {
-          const moved = await client.messageMove(String(uid), input.targetFolder, { uid: true });
+          const moved = await client.messageMove(uidSet, input.targetFolder, { uid: true });
           if (moved === false) {
-            throw new Error(`Server did not move uid ${uid}`);
+            throw new Error(`Server did not move uid set ${uidSet}`);
           }
         });
-        this.messageCache.delete(emailId);
-        results.push({ uid, emailId, ok: true });
-        succeeded++;
+        for (const uid of uids) {
+          const emailId = createEmailId(folder, uid);
+          this.messageCache.delete(emailId);
+          results.push({ uid, emailId, ok: true });
+          succeeded++;
+        }
       } catch (err) {
-        results.push({ uid, emailId, ok: false, error: String(err) });
-        failed++;
+        for (const uid of uids) {
+          const emailId = createEmailId(folder, uid);
+          results.push({ uid, emailId, ok: false, error: String(err) });
+          failed++;
+        }
       }
     }
 
@@ -1213,26 +1203,32 @@ export class SimpleIMAPService {
     let failed = 0;
     const results: BulkOperationResult["results"] = [];
 
-    for (const uid of uids) {
-      const emailId = createEmailId(folder, uid);
+    if (uids.length > 0) {
+      const uidSet = uids.join(",");
       try {
         if (input.permanent || !trashFolder) {
           await this.withMailbox(folder, false, async (client) => {
-            const deleted = await client.messageDelete(String(uid), { uid: true });
-            if (!deleted) throw new Error(`Server did not delete uid ${uid}`);
+            const deleted = await client.messageDelete(uidSet, { uid: true });
+            if (!deleted) throw new Error(`Server did not delete uid set ${uidSet}`);
           });
         } else {
           await this.withMailbox(folder, false, async (client) => {
-            const moved = await client.messageMove(String(uid), trashFolder, { uid: true });
-            if (moved === false) throw new Error(`Server did not move uid ${uid} to trash`);
+            const moved = await client.messageMove(uidSet, trashFolder, { uid: true });
+            if (moved === false) throw new Error(`Server did not move uid set ${uidSet} to trash`);
           });
         }
-        this.messageCache.delete(emailId);
-        results.push({ uid, emailId, ok: true });
-        succeeded++;
+        for (const uid of uids) {
+          const emailId = createEmailId(folder, uid);
+          this.messageCache.delete(emailId);
+          results.push({ uid, emailId, ok: true });
+          succeeded++;
+        }
       } catch (err) {
-        results.push({ uid, emailId, ok: false, error: String(err) });
-        failed++;
+        for (const uid of uids) {
+          const emailId = createEmailId(folder, uid);
+          results.push({ uid, emailId, ok: false, error: String(err) });
+          failed++;
+        }
       }
     }
 
@@ -1268,30 +1264,38 @@ export class SimpleIMAPService {
     let failed = 0;
     const results: BulkOperationResult["results"] = [];
 
-    for (const uid of uids) {
-      const emailId = createEmailId(folder, uid);
+    if (uids.length > 0) {
+      const uidSet = uids.join(",");
       try {
-        let notApplied: string[] = [];
+        const notAppliedByUid = new Map<number, string[]>();
         await this.withMailbox(folder, false, async (client) => {
           if (flagsToAdd.length > 0) {
-            await client.messageFlagsAdd(String(uid), flagsToAdd, { uid: true });
+            await client.messageFlagsAdd(uidSet, flagsToAdd, { uid: true });
           }
           if (flagsToRemove.length > 0) {
-            await client.messageFlagsRemove(String(uid), flagsToRemove, { uid: true });
+            await client.messageFlagsRemove(uidSet, flagsToRemove, { uid: true });
           }
-          const notAppliedAdds = flagsToAdd.length > 0
-            ? await this.verifyFlags(client, uid, flagsToAdd, true)
-            : [];
-          const notAppliedRemoves = flagsToRemove.length > 0
-            ? await this.verifyFlags(client, uid, flagsToRemove, false)
-            : [];
-          notApplied = [...notAppliedAdds, ...notAppliedRemoves];
+          for await (const message of client.fetch(uidSet, { uid: true, flags: true }, { uid: true })) {
+            const actual = new Set(Array.from(message.flags ?? []).map((flag: string) => flag.toLowerCase()));
+            const notApplied = [
+              ...flagsToAdd.filter((flag) => !actual.has(flag.toLowerCase())),
+              ...flagsToRemove.filter((flag) => actual.has(flag.toLowerCase())),
+            ];
+            notAppliedByUid.set(message.uid, notApplied);
+          }
         });
-        results.push({ uid, emailId, ok: true, notApplied });
-        succeeded++;
+        for (const uid of uids) {
+          const emailId = createEmailId(folder, uid);
+          const notApplied = notAppliedByUid.get(uid) ?? [];
+          results.push({ uid, emailId, ok: true, notApplied });
+          succeeded++;
+        }
       } catch (err) {
-        results.push({ uid, emailId, ok: false, error: String(err) });
-        failed++;
+        for (const uid of uids) {
+          const emailId = createEmailId(folder, uid);
+          results.push({ uid, emailId, ok: false, error: String(err) });
+          failed++;
+        }
       }
     }
 
@@ -1408,7 +1412,7 @@ export class SimpleIMAPService {
 
     const foldersToSearch = folders && folders.length > 0
       ? folders
-      : await this.resolveSelectableFolderPaths();
+      : await this.resolveSelectableFolderPaths(20);
     void acrossFolders;
 
     for (const folder of foldersToSearch) {
@@ -1650,28 +1654,10 @@ export class SimpleIMAPService {
       }
 
       const emails: EmailSummary[] = [];
-      for await (const message of client.fetch(`${plan.startUid}:${plan.endUid}`, FETCH_DETAIL_QUERY, { uid: true })) {
+      for await (const message of client.fetch(`${plan.startUid}:${plan.endUid}`, FETCH_INDEX_QUERY, { uid: true })) {
         const summary = this.toSummary(folder, message);
-        if (!message.source) {
-          emails.push(summary);
-          this.messageCache.set(summary.id, summary);
-          continue;
-        }
-
-        try {
-          const parsed = await this.parseSource(message.source);
-          const enriched = this.enrichSummaryFromParsed(summary, parsed, input.includeAttachmentText);
-          emails.push(enriched);
-          this.messageCache.set(enriched.id, enriched);
-        } catch (error) {
-          this.log.warn("Failed to parse message source during indexing", "IMAPService", {
-            folder,
-            uid: message.uid,
-            error,
-          });
-          emails.push(summary);
-          this.messageCache.set(summary.id, summary);
-        }
+        emails.push(summary);
+        this.messageCache.set(summary.id, summary);
       }
 
       const highestUid = emails.reduce((max, email) => Math.max(max, email.uid), 0) || plan.highestKnownUid;
@@ -1784,17 +1770,6 @@ export class SimpleIMAPService {
   }): Promise<RemoteDraftRef> {
     const folder = await this.resolveSpecialFolder("\\Drafts", ["Drafts"]);
 
-    if (input.existingEmailId) {
-      try {
-        await this.deleteEmail(input.existingEmailId);
-      } catch (error) {
-        this.log.warn("Failed to delete previous remote draft before re-sync", "IMAPService", {
-          existingEmailId: input.existingEmailId,
-          error,
-        });
-      }
-    }
-
     const client = await this.ensureConnected();
     const appended = await client.append(folder, input.raw, ["\\Draft"], new Date());
     if (!appended) {
@@ -1804,6 +1779,10 @@ export class SimpleIMAPService {
     let uid = appended.uid;
     if (!uid) {
       uid = await this.findUidByHeader(folder, "message-id", input.messageId);
+    }
+
+    if (input.existingEmailId) {
+      await this.deleteEmail(input.existingEmailId);
     }
 
     this.folderCache = undefined;
@@ -1918,15 +1897,15 @@ export class SimpleIMAPService {
     return query;
   }
 
-  private async resolveSelectableFolderPaths(): Promise<string[]> {
-    const client = await this.ensureConnected();
-    const folders = await client.list();
+  private async resolveSelectableFolderPaths(maxFolders?: number): Promise<string[]> {
+    const folders = await this.getFolders();
     return folders
       .filter((entry) => !Array.from(entry.flags ?? []).some((flag) => {
         const normalized = flag.replace(/^\\/, "").toLowerCase();
         return normalized === "noselect";
       }))
-      .map((entry) => entry.path);
+      .map((entry) => entry.path)
+      .slice(0, maxFolders);
   }
 
   private async resolveFolders(folder?: string): Promise<string[]> {
@@ -2052,6 +2031,33 @@ export class SimpleIMAPService {
     return simpleParser(source);
   }
 
+  private async getParsedMailDetail(emailId: string): Promise<{
+    detail: EmailDetail;
+    parsed: ParsedMail;
+  }> {
+    const { folder, uid } = parseEmailId(emailId);
+
+    return this.withMailbox(folder, true, async (client) => {
+      const message = await client.fetchOne(String(uid), FETCH_DETAIL_QUERY, { uid: true });
+      if (!message || !message.source) {
+        throw new Error(`Email not found for id ${emailId}`);
+      }
+
+      const summary = this.toSummary(folder, message);
+      const parsed = await this.parseSource(message.source);
+      const enriched = this.enrichSummaryFromParsed(summary, parsed, true);
+      const detail: EmailDetail = {
+        ...enriched,
+        text: parsed.text || stripHtmlToText(typeof parsed.html === "string" ? parsed.html : undefined),
+        html: parsed.html,
+        headers: this.mapHeaders(parsed),
+      };
+
+      this.messageCache.set(detail.id, detail);
+      return { detail, parsed };
+    });
+  }
+
   private readHeaderValue(parsed: ParsedMail | undefined, headerName: string): string | undefined {
     if (!parsed) {
       return undefined;
@@ -2119,6 +2125,28 @@ export class SimpleIMAPService {
     });
   }
 
+  private mapParsedAttachmentsWithContent(
+    parsed: ParsedMail,
+  ): Array<EmailDetail["attachments"][number] & { content: Buffer; checksum?: string }> {
+    return (parsed.attachments ?? []).map((attachment, index) => ({
+      id: createParsedAttachmentId(attachment, index),
+      filename: attachment.filename,
+      contentType: attachment.contentType,
+      size: attachment.size,
+      disposition: attachment.contentDisposition,
+      cid: attachment.cid,
+      checksum: attachment.checksum,
+      isInline: attachment.contentDisposition === "inline",
+      ...classifyAttachment({
+        filename: attachment.filename,
+        contentType: attachment.contentType,
+        disposition: attachment.contentDisposition,
+        cid: attachment.cid,
+      }),
+      content: attachment.content,
+    }));
+  }
+
   private mapHeaders(parsed?: ParsedMail): Record<string, string | string[]> {
     if (!parsed) {
       return {};
@@ -2155,25 +2183,8 @@ export class SimpleIMAPService {
       checksum?: string;
     }
   > {
-    const detail = await this.getEmailById(emailId);
-    const parsed = await this.loadParsedMail(emailId);
-    const attachments = (parsed.attachments ?? []).map((attachment, index) => ({
-      id: createParsedAttachmentId(attachment, index),
-      filename: attachment.filename,
-      contentType: attachment.contentType,
-      size: attachment.size,
-      disposition: attachment.contentDisposition,
-      cid: attachment.cid,
-      checksum: attachment.checksum,
-      isInline: attachment.contentDisposition === "inline",
-      ...classifyAttachment({
-        filename: attachment.filename,
-        contentType: attachment.contentType,
-        disposition: attachment.contentDisposition,
-        cid: attachment.cid,
-      }),
-      content: attachment.content,
-    }));
+    const { detail, parsed } = await this.getParsedMailDetail(emailId);
+    const attachments = this.mapParsedAttachmentsWithContent(parsed);
 
     const match = attachments.find(
       (attachment) =>
@@ -2187,19 +2198,6 @@ export class SimpleIMAPService {
     }
 
     return match;
-  }
-
-  private async loadParsedMail(emailId: string): Promise<ParsedMail> {
-    const { folder, uid } = parseEmailId(emailId);
-
-    return this.withMailbox(folder, true, async (client) => {
-      const message = await client.fetchOne(String(uid), { source: true }, { uid: true });
-      if (!message || !message.source) {
-        throw new Error(`Email not found for id ${emailId}`);
-      }
-      const source = message.source;
-      return this.parseSource(source);
-    });
   }
 
   async sentCopyVerify(
@@ -2257,6 +2255,58 @@ export class SimpleIMAPService {
     this._lastOpTs = Date.now();
   }
 
+  private assertMailboxUidValidity(client: ImapFlow, expectedUidValidity?: string): void {
+    if (!expectedUidValidity) {
+      return;
+    }
+
+    const mailbox = client.mailbox || undefined;
+    if (mailbox?.uidValidity?.toString() !== expectedUidValidity) {
+      throw new Error(UID_VALIDITY_MISMATCH_ERROR);
+    }
+  }
+
+  private async writeAttachmentToPath(
+    emailId: string,
+    attachment: EmailDetail["attachments"][number] & { content: Buffer; checksum?: string },
+    outputPath?: string,
+  ): Promise<AttachmentContentResult> {
+    const outputFilePath = await this.resolveAttachmentOutputPath(emailId, attachment, outputPath);
+    await mkdir(dirname(outputFilePath), { recursive: true });
+    await writeFile(outputFilePath, attachment.content);
+
+    return {
+      emailId,
+      attachment: {
+        id: attachment.id,
+        filename: attachment.filename,
+        contentType: attachment.contentType,
+        size: attachment.size,
+        disposition: attachment.disposition,
+        cid: attachment.cid,
+        checksum: attachment.checksum,
+        isInline: attachment.isInline,
+        kind: attachment.kind,
+        isCalendarInvite: attachment.isCalendarInvite,
+        isSignature: attachment.isSignature,
+      },
+      outputPath: basename(outputFilePath),
+    };
+  }
+
+  private guardAttachmentOutputPath(outputPath: string): void {
+    const allowDir = process.env.PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR?.trim();
+    if (!allowDir) {
+      return;
+    }
+
+    const allowedDir = resolve(allowDir);
+    const targetPath = resolve(outputPath);
+    if (!targetPath.startsWith(`${allowedDir}/`) && targetPath !== allowedDir) {
+      throw new Error("outputPath path escapes the allowed directory.");
+    }
+  }
+
   private async resolveAttachmentOutputPath(
     emailId: string,
     attachment: { id?: string; filename?: string },
@@ -2271,7 +2321,9 @@ export class SimpleIMAPService {
     try {
       const existing = await stat(resolved);
       if (existing.isDirectory()) {
-        return join(resolved, filename);
+        const directoryTarget = join(resolved, filename);
+        this.guardAttachmentOutputPath(directoryTarget);
+        return directoryTarget;
       }
     } catch (error) {
       if (
@@ -2285,9 +2337,12 @@ export class SimpleIMAPService {
     }
 
     if (resolved.endsWith("/") || resolved.endsWith("\\")) {
-      return join(resolved, filename);
+      const directoryTarget = join(resolved, filename);
+      this.guardAttachmentOutputPath(directoryTarget);
+      return directoryTarget;
     }
 
+    this.guardAttachmentOutputPath(resolved);
     return resolved;
   }
 }

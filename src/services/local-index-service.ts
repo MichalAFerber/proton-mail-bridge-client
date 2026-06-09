@@ -84,6 +84,15 @@ type MessageRow = {
 
 const DB_SCHEMA_VERSION = 3;
 const STALE_THRESHOLD_MINUTES = 60;
+const DEFAULT_SNAPSHOT_LIMIT = 5000;
+
+interface SnapshotLoadOptions {
+  limit?: number;
+  offset?: number;
+  folder?: string;
+  isRead?: boolean;
+  since?: string;
+}
 
 type ParsedSearchQuery = {
   residualTerms: string[];
@@ -545,6 +554,7 @@ export class LocalIndexService {
 
   async search(filters: SearchEmailsInput): Promise<{
     total: number;
+    hasMore: boolean;
     emails: EmailSummary[];
   }> {
     const parsedQuery = parseSearchQuery(filters.query);
@@ -557,9 +567,15 @@ export class LocalIndexService {
       to: filters.to || parsedQuery.to,
       subject: filters.subject || parsedQuery.subject,
     };
+    const limit = normalizedFilters.limit ?? 100;
+    const offset = 0;
 
     if (normalizedFilters.threadId?.trim()) {
-      const snapshot = await this.loadSnapshot();
+      const snapshot = await this.loadSnapshot({
+        folder: normalizedFilters.folder,
+        isRead: normalizedFilters.isRead,
+        since: normalizedFilters.dateFrom,
+      });
       const thread = (this.buildThreads(snapshot, true) as ThreadDetail[]).find(
         (entry) => entry.id === normalizedFilters.threadId,
       );
@@ -567,15 +583,16 @@ export class LocalIndexService {
         const threadMessages = sortEmailsByNewest(thread.messages).filter((email) =>
           matchesIndexedSearch(email, { ...normalizedFilters, threadId: undefined }),
         ).sort((left, right) => searchRelevanceScore(right, normalizedFilters) - searchRelevanceScore(left, normalizedFilters));
+        const totalCount = threadMessages.length;
         return {
-          total: threadMessages.length,
-          emails: threadMessages.slice(0, normalizedFilters.limit ?? 100),
+          total: totalCount,
+          hasMore: totalCount > offset + limit,
+          emails: threadMessages.slice(offset, offset + limit),
         };
       }
     }
 
     const db = await this.ensureDb();
-    const limit = normalizedFilters.limit ?? 100;
     const emails = this.loadCandidateEmails(db, normalizedFilters, Math.max(limit * 10, 500));
     const matches = dedupeEmails(emails)
       .filter((email) => matchesIndexedSearch(email, normalizedFilters))
@@ -586,10 +603,12 @@ export class LocalIndexService {
         }
         return sortEmailsByNewest([left, right])[0] === left ? -1 : 1;
       });
+    const totalCount = matches.length;
 
     return {
-      total: matches.length,
-      emails: matches.slice(0, limit),
+      total: totalCount,
+      hasMore: totalCount > offset + limit,
+      emails: matches.slice(offset, offset + limit),
     };
   }
 
@@ -695,6 +714,7 @@ export class LocalIndexService {
 
   async getThreads(input: { query?: string; label?: string; limit?: number } = {}): Promise<{
     total: number;
+    hasMore: boolean;
     threads: ThreadSummary[];
   }> {
     const snapshot = await this.loadSnapshot();
@@ -723,9 +743,12 @@ export class LocalIndexService {
     });
 
     const limit = input.limit ?? 100;
+    const offset = 0;
+    const totalCount = threads.length;
     return {
-      total: threads.length,
-      threads: threads.slice(0, limit),
+      total: totalCount,
+      hasMore: totalCount > offset + limit,
+      threads: threads.slice(offset, offset + limit),
     };
   }
 
@@ -748,11 +771,13 @@ export class LocalIndexService {
     pendingOn?: "you" | "them" | "any";
   } = {}): Promise<{
     total: number;
+    hasMore: boolean;
     threads: ActionableThreadSummary[];
   }> {
     const snapshot = await this.loadSnapshot();
     const pendingFilter = input.pendingOn || "any";
     const limit = input.limit ?? 50;
+    const offset = 0;
     const actionable = (this.buildThreads(snapshot, true) as ThreadDetail[])
       .map((thread) => {
         const latestMessage = thread.messages[thread.messages.length - 1];
@@ -810,9 +835,11 @@ export class LocalIndexService {
         return rightTime - leftTime;
       });
 
+    const totalCount = actionable.length;
     return {
-      total: actionable.length,
-      threads: actionable.slice(0, limit),
+      total: totalCount,
+      hasMore: totalCount > offset + limit,
+      threads: actionable.slice(offset, offset + limit),
     };
   }
 
@@ -886,6 +913,8 @@ export class LocalIndexService {
     const pendingOn = input.pendingOn ?? "you";
     const thresholdMs = minAgeHours * 60 * 60 * 1000;
     const now = Date.now();
+    const limit = input.limit ?? 25;
+    const offset = 0;
 
     const candidates = (this.buildThreads(snapshot, true) as ThreadDetail[])
       .map((thread) => {
@@ -928,13 +957,15 @@ export class LocalIndexService {
         return right.score - left.score;
       });
 
+    const totalCount = candidates.length;
     return {
       generatedAt: new Date().toISOString(),
       indexUpdatedAt: snapshot.updatedAt,
       minAgeHours,
       pendingOn,
-      total: candidates.length,
-      threads: candidates.slice(0, input.limit ?? 25),
+      total: totalCount,
+      hasMore: totalCount > offset + limit,
+      threads: candidates.slice(offset, offset + limit),
     };
   }
 
@@ -1006,12 +1037,15 @@ export class LocalIndexService {
         return new Date(right.latestDate || 0).getTime() - new Date(left.latestDate || 0).getTime();
       });
 
+    const offset = 0;
+    const totalCount = matches.length;
     return {
       generatedAt: new Date().toISOString(),
       indexUpdatedAt: snapshot.updatedAt,
       category,
-      total: matches.length,
-      threads: matches.slice(0, limit),
+      total: totalCount,
+      hasMore: totalCount > offset + limit,
+      threads: matches.slice(offset, offset + limit),
     };
   }
 
@@ -1539,7 +1573,7 @@ export class LocalIndexService {
     }
   }
 
-  private async loadSnapshot(): Promise<SnapshotData> {
+  private async loadSnapshot(options: SnapshotLoadOptions = {}): Promise<SnapshotData> {
     const db = await this.ensureDb();
 
     const metadataRows = db
@@ -1588,9 +1622,36 @@ export class LocalIndexService {
         total: (row as { total?: number }).total,
       } satisfies MailboxSyncCheckpoint));
 
+    const messageSqlParts = [`SELECT * FROM messages`];
+    const messageParams: unknown[] = [];
+    const messageConditions: string[] = [];
+
+    if (options.folder) {
+      messageConditions.push(`folder = ?`);
+      messageParams.push(options.folder);
+    }
+    if (typeof options.isRead === "boolean") {
+      messageConditions.push(`is_read = ?`);
+      messageParams.push(options.isRead ? 1 : 0);
+    }
+    if (options.since) {
+      messageConditions.push(`COALESCE(internal_date, date) >= ?`);
+      messageParams.push(options.since);
+    }
+
+    if (messageConditions.length > 0) {
+      messageSqlParts.push(`WHERE ${messageConditions.join(" AND ")}`);
+    }
+
+    // Cap unfiltered snapshots so thread/status builders never materialize the entire mailbox at once.
+    const messageLimit = Math.max(0, options.limit ?? DEFAULT_SNAPSHOT_LIMIT);
+    const messageOffset = Math.max(0, options.offset ?? 0);
+    messageSqlParts.push(`ORDER BY COALESCE(internal_date, date) DESC, uid DESC LIMIT ? OFFSET ?`);
+    messageParams.push(messageLimit, messageOffset);
+
     const messages = db
-      .prepare(`SELECT * FROM messages ORDER BY COALESCE(internal_date, date) DESC, uid DESC`)
-      .all()
+      .prepare(messageSqlParts.join(" "))
+      .all(...messageParams)
       .map((row) => this.rowToEmailSummary(row as MessageRow));
 
     return {

@@ -188,6 +188,7 @@ export class BackgroundSyncService {
     }
 
     this.idleLoop = (async () => {
+      let failCount = 0;
       while (this.started && this.status.enabled && this.status.idleEnabled && this.status.folder) {
         this.status.idleWatching = true;
         try {
@@ -195,6 +196,7 @@ export class BackgroundSyncService {
             folder: this.status.folder,
             timeoutMs: this.status.idleMaxSeconds * 1000,
           });
+          failCount = 0;
           this.status.lastIdleAt = result.checkedAt;
           this.status.lastIdleError = undefined;
           if (result.changed) {
@@ -216,7 +218,9 @@ export class BackgroundSyncService {
             this.scheduleFailureRetry("auth");
             break;
           }
-          await this.waitForRetry(TRANSIENT_BACKOFF_MIN_MS);
+          const delayMs = Math.min(1000 * Math.pow(2, failCount), 300_000);
+          failCount += 1;
+          await this.waitForRetry(delayMs);
         }
       }
       this.status.idleWatching = false;

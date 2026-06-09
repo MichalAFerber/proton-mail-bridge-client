@@ -7,6 +7,7 @@ const MAX_AUDIT_BYTES = 5 * 1024 * 1024;
 export class AuditService {
   private readonly auditPath: string;
   private readonly archivePath: string;
+  private _rotateLock: Promise<void> = Promise.resolve();
 
   constructor(private readonly config: ProtonMailConfig) {
     this.auditPath = join(this.config.dataDir, "audit.log");
@@ -19,8 +20,16 @@ export class AuditService {
 
   async record(entry: AuditEntry): Promise<void> {
     await mkdir(dirname(this.auditPath), { recursive: true });
-    await this.rotateIfNeeded();
-    await appendFile(this.auditPath, `${JSON.stringify(entry)}\n`, "utf8");
+    const persistedEntry: AuditEntry = {
+      ...entry,
+      durationMs: entry.durationMs ?? 0,
+      error: entry.error ? this.scrubError(entry.error) : entry.error,
+    };
+    await this.withRotateLock(async () => {
+      await this.rotateIfNeeded();
+      // WARNING: This audit log has no cryptographic integrity protection. Any process with filesystem access can tamper with or delete entries.
+      await appendFile(this.auditPath, `${JSON.stringify(persistedEntry)}\n`, "utf8");
+    });
   }
 
   async list(limit = 100): Promise<AuditEntry[]> {
@@ -42,6 +51,21 @@ export class AuditService {
       }
       throw error;
     }
+  }
+
+  private async withRotateLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this._rotateLock.then(fn, fn);
+    this._rotateLock = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private scrubError(error: string): string {
+    return String(error)
+      .replace(/\b(password=)\S+/gi, "$1REDACTED")
+      .replace(/:[^:@/\s]+@/g, ":REDACTED@");
   }
 
   private async readEntries(path: string): Promise<AuditEntry[]> {

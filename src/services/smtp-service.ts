@@ -1,6 +1,12 @@
+import { randomUUID } from "node:crypto";
 import nodemailer, { type SentMessageInfo, type Transporter } from "nodemailer";
 import MailComposer from "nodemailer/lib/mail-composer/index.js";
+import sanitizeHtml from "sanitize-html";
 import type { ProtonMailConfig, SendEmailInput } from "../types/index.js";
+
+function sanitizeHeader(value: string): string {
+  return value.replace(/[\r\n\0]/g, " ").trim();
+}
 
 export class SMTPService {
   private transporter?: Transporter;
@@ -77,12 +83,43 @@ export class SMTPService {
   }
 
   private sanitizeHtmlContent(html: string): string {
-    return html
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
-      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
-      .replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "")
-      .replace(/(<img\b[^>]*?\bsrc\s*=\s*["'])(?!data:|cid:|#)([^"']*)/gi, "$1")
-      .replace(/\bhref\s*=\s*["']javascript:[^"']*["']/gi, 'href="#"');
+    return sanitizeHtml(html, {
+      allowedTags: [
+        "p",
+        "br",
+        "b",
+        "i",
+        "u",
+        "strong",
+        "em",
+        "a",
+        "ul",
+        "ol",
+        "li",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "blockquote",
+        "code",
+        "pre",
+        "table",
+        "thead",
+        "tbody",
+        "tr",
+        "th",
+        "td",
+        "span",
+        "div",
+      ],
+      allowedAttributes: {
+        a: ["href"],
+      },
+      allowedSchemes: ["http", "https", "mailto"],
+      allowedSchemesAppliedToAttributes: ["href", "src"],
+    });
   }
 
   private buildMailOptions(input: SendEmailInput): Record<string, unknown> {
@@ -105,8 +142,14 @@ export class SMTPService {
     });
 
     const fromAddress = this.config.smtp.username;
-    const from = input.fromName
-      ? `"${input.fromName.replace(/"/g, "")}" <${fromAddress}>`
+    const fromName = input.fromName ? sanitizeHeader(input.fromName).replace(/"/g, "") : undefined;
+    const subject = sanitizeHeader(input.subject);
+    const replyTo = input.replyTo ? sanitizeHeader(input.replyTo) : undefined;
+    const messageId = input.messageId
+      ? sanitizeHeader(input.messageId)
+      : `<${randomUUID()}@protonmail.local>`;
+    const from = fromName
+      ? `"${fromName}" <${fromAddress}>`
       : fromAddress;
 
     const shouldSanitize = input.sanitizeHtml !== false && (input.isHtml || input.htmlBody !== undefined);
@@ -120,13 +163,13 @@ export class SMTPService {
       to: input.to.join(", "),
       cc: input.cc?.join(", "),
       bcc: input.bcc?.join(", "),
-      subject: input.subject,
+      subject,
       text: sanitizedHtml ? input.body : (input.isHtml ? undefined : input.body),
       html: sanitizedHtml,
-      replyTo: input.replyTo,
+      replyTo,
       inReplyTo: input.inReplyTo,
       references: input.references,
-      messageId: input.messageId,
+      messageId,
       attachments,
       priority: input.priority ?? "normal",
     };

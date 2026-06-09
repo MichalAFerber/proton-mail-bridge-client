@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { join, resolve as pathResolve } from "node:path";
+import { isAbsolute, join, resolve as pathResolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -75,6 +76,9 @@ type ToolResult = {
   isError?: boolean;
 };
 
+const require = createRequire(import.meta.url);
+const packageJson = require("../package.json") as { version?: string };
+const PACKAGE_VERSION = packageJson.version ?? process.env.npm_package_version ?? "0.0.0";
 const RESOURCE_SCHEME = "protonmail";
 const ALL_EMAIL_ACTIONS: EmailAction[] = [
   "mark_read",
@@ -180,7 +184,7 @@ const TOOLS = [
         dryRun: { type: "boolean", description: "Preview recipient set and threading headers without sending.", default: false },
         includeQuote: { type: "boolean", description: "Append the quoted original message to the reply body.", default: true },
       },
-      required: ["emailId"],
+      required: ["emailId", "body"],
     },
   },
   {
@@ -930,7 +934,7 @@ const TOOLS = [
   {
     name: "batch_email_action",
     description: "Apply a mailbox action to multiple emails in a single IMAP pass. Actions: mark_read, mark_unread, star, unstar, archive, trash, restore, move (requires targetFolder), delete (permanent expunge — use with care). Supports dryRun to preview impact before mutating. Prefer apply_thread_action when acting by threadId rather than individual email ids.",
-    annotations: { destructiveHint: false },
+    annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -972,6 +976,7 @@ const TOOLS = [
     name: "apply_thread_action",
     description:
       "Apply a reversible mailbox action to every message in a normalized thread at once. Use when you want to act on a full thread identified by threadId (e.g. archive or mark-read an entire conversation). Supports dryRun, unreadOnly to scope impact, and syncBefore to refresh the index first. Prefer batch_email_action when you have explicit emailIds rather than a threadId.",
+    annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -1069,6 +1074,7 @@ const TOOLS = [
   {
     name: "run_doctor",
     description: "Run a comprehensive production health check covering SMTP auth, IMAP auth, optional IMAP IDLE probe, SQLite index integrity, and runtime policy validation. Use to fully diagnose or validate the setup. Prefer get_connection_status for a quick protocol-only reachability check.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -1096,6 +1102,7 @@ const TOOLS = [
   {
     name: "wait_for_mailbox_changes",
     description: "Open an IMAP IDLE session and block until a mailbox change event arrives or the timeout expires. Use to detect real-time inbox activity without polling. Returns whether a change was observed. Always has a hard timeout (default 15s) to avoid blocking indefinitely — do not use in fire-and-forget pipelines.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -1162,7 +1169,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        limit: { type: "number", description: "Maximum labels to return.", default: 250 },
+        limit: { type: "number", description: "Maximum labels to return. Capped at 250; use get_folders for the complete live folder list.", default: 250 },
       },
     },
   },
@@ -1400,6 +1407,7 @@ const TOOLS = [
   {
     name: "save_attachments",
     description: "Save all qualifying attachments from an email to a directory on disk, with optional filename substring or content-type filters. Use to batch-download attachments from a single email. Returns the list of written file paths. Prefer save_attachment when you need to save one specific attachment by its attachmentId.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -1415,6 +1423,7 @@ const TOOLS = [
   {
     name: "save_attachment",
     description: "Save a single email attachment to disk by its attachmentId and return the written file path. Use when you have a specific attachmentId from list_attachments and want to write that file. Prefer save_attachments to save all or filtered attachments from an email without needing individual attachment IDs.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -2357,10 +2366,7 @@ function withBulkNotFound(
 }
 
 function paginateRecentRecords<T>(records: T[], limit: number, offset: number): T[] {
-  if (offset <= 0) {
-    return records;
-  }
-  return records.slice(0, Math.max(0, records.length - offset)).slice(-limit);
+  return records.slice(offset, offset + limit);
 }
 
 function pickReplyTargetFromThread(
@@ -2447,11 +2453,8 @@ function readEnvValue(name: string): string | undefined {
 
   const command = process.env[`${name}_COMMAND`]?.trim();
   if (command) {
-    return execSync(command, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: "/bin/sh",
-    }).trim();
+    const parts = command.split(/\s+/);
+    return execFileSync(parts[0], parts.slice(1), { encoding: "utf-8" }).trim();
   }
 
   const filePath = process.env[`${name}_FILE`]?.trim();
@@ -2509,6 +2512,16 @@ function parseAllowedActionsEnv(name: string): EmailAction[] {
   return allowed.length > 0 ? allowed : [...ALL_EMAIL_ACTIONS];
 }
 
+function isLocalBridgeHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
+}
+
+function isMissingTargetFolderError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /TRYCREATE|NONEXISTENT/i.test(message);
+}
+
 export function buildConfigFromEnv(): ProtonMailConfig {
   const username = readEnvValue("PROTONMAIL_USERNAME");
   const password = readEnvValue("PROTONMAIL_PASSWORD");
@@ -2539,25 +2552,39 @@ export function buildConfigFromEnv(): ProtonMailConfig {
   const imapUsername = process.env.PROTONMAIL_IMAP_USERNAME?.trim() || username;
   const imapPassword = process.env.PROTONMAIL_IMAP_PASSWORD?.trim() || password;
   const opDelayMs = parseIntegerEnv("PROTONMAIL_OP_DELAY_MS", 0, 0, 5000);
+  const smtpHost = process.env.PROTONMAIL_SMTP_HOST || "127.0.0.1";
+  const imapHost = process.env.PROTONMAIL_IMAP_HOST || "localhost";
+  const imapSecure = parseBooleanEnv("PROTONMAIL_IMAP_SECURE", false);
+  const dataDir = process.env.PROTONMAIL_DATA_DIR?.trim() || join(homedir(), ".proton-mail-bridge-client");
+
+  if (dataDir && !isAbsolute(dataDir)) {
+    throw new Error("PROTONMAIL_DATA_DIR must be absolute, got: " + dataDir);
+  }
 
   logger.setDebugMode(debug);
+  if (isLocalBridgeHost(smtpHost)) {
+    logger.warn("TLS verification is disabled for local Bridge SMTP connections.", "MCPServer", { host: smtpHost });
+  }
+  if (isLocalBridgeHost(imapHost)) {
+    logger.warn("TLS verification is disabled for local Bridge IMAP connections.", "MCPServer", { host: imapHost });
+  }
 
   return {
     smtp: {
-      host: process.env.PROTONMAIL_SMTP_HOST || "127.0.0.1",
+      host: smtpHost,
       port: smtpPort,
       secure: smtpPort === 465,
       username,
       password,
     },
     imap: {
-      host: process.env.PROTONMAIL_IMAP_HOST || "localhost",
+      host: imapHost,
       port: imapPort,
-      secure: parseBooleanEnv("PROTONMAIL_IMAP_SECURE", false),
+      secure: imapSecure,
       username: imapUsername,
       password: imapPassword,
     },
-    dataDir: process.env.PROTONMAIL_DATA_DIR || join(homedir(), ".proton-mail-bridge-client"),
+    dataDir,
     debug,
     cacheEnabled: true,
     analyticsEnabled: true,
@@ -2610,7 +2637,7 @@ export function createServer(
   const server = new Server(
     {
       name: "proton-mail-bridge-client",
-      version: "1.10.0",
+      version: PACKAGE_VERSION,
     },
     {
       capabilities: {
@@ -3556,15 +3583,24 @@ export function createServer(
         }
 
         case "get_emails": {
+          const effectiveLimit = normalizeLimit(args.limit, 50);
           const result = await imapService.getEmails({
             folder: optionalString(args, "folder"),
-            limit: typeof args.limit === "number" ? args.limit : undefined,
+            limit: effectiveLimit,
             offset: typeof args.offset === "number" ? args.offset : undefined,
             beforeUid: typeof args?.beforeUid === "number" ? args.beforeUid : undefined,
             sortByUid: args?.sortByUid === "asc" || args?.sortByUid === "desc" ? args.sortByUid : undefined,
             includeSnippet: normalizeBoolean(args.includeSnippet, false),
           });
-          return createTextResult(result, false, result.emails.map(emailSource));
+          return createTextResult(
+            {
+              ...result,
+              returned: result.emails.length,
+              hasMore: result.emails.length === effectiveLimit,
+            },
+            false,
+            result.emails.map(emailSource),
+          );
         }
 
         case "get_email_by_id": {
@@ -3593,33 +3629,50 @@ export function createServer(
         }
 
         case "search_emails": {
-          const result = await imapService.searchEmails({
-            query: optionalString(args, "query"),
-            folder: optionalString(args, "folder"),
-            label: optionalString(args, "label"),
-            threadId: optionalString(args, "threadId"),
-            from: optionalString(args, "from"),
-            to: optionalString(args, "to"),
-            senderDomain: optionalString(args, "senderDomain"),
-            mailboxRole: optionalString(args, "mailboxRole"),
-            messageId: optionalString(args, "messageId"),
-            cc: optionalString(args, "cc"),
-            bcc: optionalString(args, "bcc"),
-            subject: optionalString(args, "subject"),
-            hasAttachment:
-              typeof args.hasAttachment === "boolean" ? args.hasAttachment : undefined,
-            attachmentName: optionalString(args, "attachmentName"),
-            isRead: typeof args.isRead === "boolean" ? args.isRead : undefined,
-            isStarred: typeof args.isStarred === "boolean" ? args.isStarred : undefined,
-            dateFrom: optionalString(args, "dateFrom"),
-            dateTo: optionalString(args, "dateTo"),
-            sizeLarger: typeof args.sizeLarger === "number" ? args.sizeLarger : undefined,
-            sizeSmaller: typeof args.sizeSmaller === "number" ? args.sizeSmaller : undefined,
-            listId: optionalString(args, "listId"),
-            limit: typeof args.limit === "number" ? args.limit : undefined,
-            includeSnippet: normalizeBoolean(args.includeSnippet, false),
-          });
-          return createTextResult(result, false, result.emails.map(emailSource));
+          const effectiveLimit = normalizeLimit(args.limit, 100);
+          try {
+            const result = await imapService.searchEmails({
+              query: optionalString(args, "query"),
+              folder: optionalString(args, "folder"),
+              label: optionalString(args, "label"),
+              threadId: optionalString(args, "threadId"),
+              from: optionalString(args, "from"),
+              to: optionalString(args, "to"),
+              senderDomain: optionalString(args, "senderDomain"),
+              mailboxRole: optionalString(args, "mailboxRole"),
+              messageId: optionalString(args, "messageId"),
+              cc: optionalString(args, "cc"),
+              bcc: optionalString(args, "bcc"),
+              subject: optionalString(args, "subject"),
+              hasAttachment:
+                typeof args.hasAttachment === "boolean" ? args.hasAttachment : undefined,
+              attachmentName: optionalString(args, "attachmentName"),
+              isRead: typeof args.isRead === "boolean" ? args.isRead : undefined,
+              isStarred: typeof args.isStarred === "boolean" ? args.isStarred : undefined,
+              dateFrom: optionalString(args, "dateFrom"),
+              dateTo: optionalString(args, "dateTo"),
+              sizeLarger: typeof args.sizeLarger === "number" ? args.sizeLarger : undefined,
+              sizeSmaller: typeof args.sizeSmaller === "number" ? args.sizeSmaller : undefined,
+              listId: optionalString(args, "listId"),
+              limit: effectiveLimit,
+              includeSnippet: normalizeBoolean(args.includeSnippet, false),
+            });
+            return createTextResult(
+              {
+                ...result,
+                returned: result.emails.length,
+                hasMore: result.emails.length === effectiveLimit,
+              },
+              false,
+              result.emails.map(emailSource),
+            );
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (message.includes("Invalid date")) {
+              throw new McpError(ErrorCode.InvalidParams, message);
+            }
+            throw error;
+          }
         }
 
         case "update_message_labels": {
@@ -3721,6 +3774,7 @@ export function createServer(
             ? (args.emailIds as unknown[]).map(String) : undefined;
           const match = args.match && typeof args.match === "object"
             ? (args.match as BulkMatchCriteria) : undefined;
+          if (emailIds && emailIds.length === 0) throw new McpError(ErrorCode.InvalidParams, "emailIds must contain at least one email id.");
           if (!emailIds && !match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds or match.");
           if (emailIds && match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds OR match, not both.");
           const folder = optionalString(args, "folder") ?? "INBOX";
@@ -3758,6 +3812,7 @@ export function createServer(
             ? (args.emailIds as unknown[]).map(String) : undefined;
           const match = args.match && typeof args.match === "object"
             ? (args.match as BulkMatchCriteria) : undefined;
+          if (emailIds && emailIds.length === 0) throw new McpError(ErrorCode.InvalidParams, "emailIds must contain at least one email id.");
           if (!emailIds && !match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds or match.");
           if (emailIds && match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds OR match, not both.");
           const folder = optionalString(args, "folder") ?? "INBOX";
@@ -3792,6 +3847,7 @@ export function createServer(
             ? (args.emailIds as unknown[]).map(String) : undefined;
           const match = args.match && typeof args.match === "object"
             ? (args.match as BulkMatchCriteria) : undefined;
+          if (emailIds && emailIds.length === 0) throw new McpError(ErrorCode.InvalidParams, "emailIds must contain at least one email id.");
           if (!emailIds && !match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds or match.");
           if (emailIds && match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds OR match, not both.");
           const flagsToAdd = Array.isArray(args.flagsToAdd) ? (args.flagsToAdd as unknown[]).map(String) : [];
@@ -3817,6 +3873,7 @@ export function createServer(
             ? (args.emailIds as unknown[]).map(String) : undefined;
           const match = args.match && typeof args.match === "object"
             ? (args.match as BulkMatchCriteria) : undefined;
+          if (emailIds && emailIds.length === 0) throw new McpError(ErrorCode.InvalidParams, "emailIds must contain at least one email id.");
           if (!emailIds && !match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds or match.");
           if (emailIds && match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds OR match, not both.");
           const labelsToAdd = Array.isArray(args.labelsToAdd) ? (args.labelsToAdd as unknown[]).map(String) : [];
@@ -3968,12 +4025,21 @@ export function createServer(
         case "move_email":
         {
           ensureMailboxWriteAllowed(config.runtime);
-          const result = await withAudit(auditService, name, args, async () =>
-            imapService.moveEmail(
-              requireString(args, "emailId"),
-              requireString(args, "targetFolder"),
-            ),
-          );
+          const emailId = requireString(args, "emailId");
+          const targetFolder = requireString(args, "targetFolder");
+          const result = await withAudit(auditService, name, args, async () => {
+            try {
+              return await imapService.moveEmail(emailId, targetFolder);
+            } catch (error) {
+              if (isMissingTargetFolderError(error)) {
+                throw new McpError(
+                  ErrorCode.InvalidParams,
+                  `Target folder ${targetFolder} does not exist. Use get_folders to list valid paths.`,
+                );
+              }
+              throw error;
+            }
+          });
           const sources = result.targetEmailId
             ? [
                 {
@@ -4229,7 +4295,7 @@ export function createServer(
             imapIdle: imapService.getIdleStatus(),
             index: indexStatus,
             audit: {
-              path: auditService.getPath(),
+              enabled: true,
             },
             drafts: {
               total: drafts.length,
@@ -4257,27 +4323,11 @@ export function createServer(
 
         case "sync_emails":
         {
-          const checkpoints = await localIndexService.getSyncCheckpointMap();
-          const snapshot = await imapService.collectEmailsForIndex({
-              folder: optionalString(args, "folder"),
-              full: normalizeBoolean(args.full, false),
-              limitPerFolder: typeof args.limitPerFolder === "number" ? args.limitPerFolder : undefined,
-              includeAttachmentText: normalizeBoolean(args.includeAttachmentText, true),
-              checkpoints,
-            });
-
-          const indexStatus = await localIndexService.recordSnapshot({
-            folders: snapshot.folders,
-            emails: snapshot.emails,
-            syncedAt: snapshot.syncedAt,
-            folderStats: snapshot.folderStats,
-          });
-
+          const syncStatus = await backgroundSyncService.runNow("sync_emails");
+          const indexStatus = await localIndexService.getStatus();
           return createTextResult({
-            syncedAt: snapshot.syncedAt,
-            full: snapshot.full,
-            folders: snapshot.folderStats,
-            cachedMessages: snapshot.emails.length,
+            checkedAt: new Date().toISOString(),
+            backgroundSync: syncStatus,
             index: {
               updatedAt: indexStatus.updatedAt,
               storedMessageCount: indexStatus.storedMessageCount,
@@ -4809,7 +4859,10 @@ export function createServer(
                   : undefined,
               limit: limit + offset,
             });
-          return createTextResult(paginateRecentRecords(records, limit, offset));
+          return createTextResult({
+            ...records,
+            entries: paginateRecentRecords(records.entries, limit, offset),
+          });
         }
 
         case "get_audit_logs":
@@ -4825,11 +4878,14 @@ export function createServer(
           throw new McpError(ErrorCode.InvalidParams, `Unknown tool: ${name}`);
       }
     } catch (error) {
-      logger.error("Tool call failed", "MCPServer", { name, error });
       if (error instanceof McpError) {
         throw error;
       }
-      throw new McpError(ErrorCode.InternalError, error instanceof Error ? error.message : String(error));
+      logger.error("Tool call failed", "MCPServer", { name, error });
+      throw new McpError(
+        ErrorCode.InternalError,
+        "An internal error occurred. Check get_logs for details.",
+      );
     }
   });
 

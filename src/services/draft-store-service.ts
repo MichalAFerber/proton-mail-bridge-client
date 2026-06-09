@@ -27,6 +27,7 @@ function createEmptyStore(): DraftStoreFile {
 
 export class DraftStoreService {
   private readonly draftPath: string;
+  private _lock: Promise<void> = Promise.resolve();
   private loadedStore?: DraftStoreFile;
 
   constructor(
@@ -69,36 +70,38 @@ export class DraftStoreService {
     sourceMessageId?: string;
     notes?: string;
   }): Promise<DraftRecord> {
-    const store = await this.load();
-    const now = new Date().toISOString();
-    const draft: DraftRecord = {
-      id: randomUUID(),
-      status: "draft",
-      mode: input.mode ?? "compose",
-      createdAt: now,
-      updatedAt: now,
-      to: [...(input.to ?? [])],
-      cc: [...(input.cc ?? [])],
-      bcc: [...(input.bcc ?? [])],
-      subject: input.subject,
-      body: input.body,
-      isHtml: Boolean(input.isHtml),
-      priority: input.priority,
-      replyTo: input.replyTo,
-      inReplyTo: input.inReplyTo,
-      references: input.references ? [...input.references] : undefined,
-      draftMessageId: this.createDraftMessageId(),
-      attachments: [...(input.attachments ?? [])],
-      sourceEmailId: input.sourceEmailId,
-      sourceMessageId: input.sourceMessageId,
-      notes: input.notes,
-      remoteSyncState: "local_only",
-    };
+    return this.withLock(async () => {
+      const store = await this.loadUnlocked();
+      const now = new Date().toISOString();
+      const draft: DraftRecord = {
+        id: randomUUID(),
+        status: "draft",
+        mode: input.mode ?? "compose",
+        createdAt: now,
+        updatedAt: now,
+        to: [...(input.to ?? [])],
+        cc: [...(input.cc ?? [])],
+        bcc: [...(input.bcc ?? [])],
+        subject: input.subject,
+        body: input.body,
+        isHtml: Boolean(input.isHtml),
+        priority: input.priority,
+        replyTo: input.replyTo,
+        inReplyTo: input.inReplyTo,
+        references: input.references ? [...input.references] : undefined,
+        draftMessageId: this.createDraftMessageId(),
+        attachments: [...(input.attachments ?? [])],
+        sourceEmailId: input.sourceEmailId,
+        sourceMessageId: input.sourceMessageId,
+        notes: input.notes,
+        remoteSyncState: "local_only",
+      };
 
-    store.updatedAt = now;
-    store.drafts[draft.id] = draft;
-    await this.save(store);
-    return draft;
+      store.updatedAt = now;
+      store.drafts[draft.id] = draft;
+      await this.save(store);
+      return draft;
+    });
   }
 
   async updateDraft(
@@ -118,155 +121,182 @@ export class DraftStoreService {
       notes?: string;
     },
   ): Promise<DraftRecord> {
-    const store = await this.load();
-    const existing = store.drafts[id];
-    if (!existing) {
-      throw new Error(`Draft not found for id ${id}`);
-    }
+    return this.withLock(async () => {
+      const store = await this.loadUnlocked();
+      const existing = store.drafts[id];
+      if (!existing) {
+        throw new Error(`Draft not found for id ${id}`);
+      }
 
-    const updatedAt = new Date().toISOString();
-    const nextDraft: DraftRecord = {
-      ...existing,
-      updatedAt,
-      to: patch.to ? [...patch.to] : existing.to,
-      cc: patch.cc ? [...patch.cc] : existing.cc,
-      bcc: patch.bcc ? [...patch.bcc] : existing.bcc,
-      subject: patch.subject ?? existing.subject,
-      body: patch.body ?? existing.body,
-      isHtml: typeof patch.isHtml === "boolean" ? patch.isHtml : existing.isHtml,
-      priority: patch.priority ?? existing.priority,
-      replyTo: patch.replyTo ?? existing.replyTo,
-      inReplyTo: patch.inReplyTo ?? existing.inReplyTo,
-      references: patch.references ? [...patch.references] : existing.references,
-      attachments: patch.attachments ? [...patch.attachments] : existing.attachments,
-      notes: patch.notes ?? existing.notes,
-    };
+      const updatedAt = new Date().toISOString();
+      const nextDraft: DraftRecord = {
+        ...existing,
+        updatedAt,
+        to: patch.to ? [...patch.to] : existing.to,
+        cc: patch.cc ? [...patch.cc] : existing.cc,
+        bcc: patch.bcc ? [...patch.bcc] : existing.bcc,
+        subject: patch.subject ?? existing.subject,
+        body: patch.body ?? existing.body,
+        isHtml: typeof patch.isHtml === "boolean" ? patch.isHtml : existing.isHtml,
+        priority: patch.priority ?? existing.priority,
+        replyTo: patch.replyTo ?? existing.replyTo,
+        inReplyTo: patch.inReplyTo ?? existing.inReplyTo,
+        references: patch.references ? [...patch.references] : existing.references,
+        attachments: patch.attachments ? [...patch.attachments] : existing.attachments,
+        notes: patch.notes ?? existing.notes,
+      };
 
-    store.updatedAt = updatedAt;
-    store.drafts[id] = nextDraft;
-    await this.save(store);
-    return nextDraft;
+      store.updatedAt = updatedAt;
+      store.drafts[id] = nextDraft;
+      await this.save(store);
+      return nextDraft;
+    });
   }
 
   async markSent(id: string, result: DraftSendResult): Promise<DraftRecord> {
-    const store = await this.load();
-    const existing = store.drafts[id];
-    if (!existing) {
-      throw new Error(`Draft not found for id ${id}`);
-    }
+    return this.withLock(async () => {
+      const store = await this.loadUnlocked();
+      const existing = store.drafts[id];
+      if (!existing) {
+        throw new Error(`Draft not found for id ${id}`);
+      }
 
-    const sentAt = new Date().toISOString();
-    const nextDraft: DraftRecord = {
-      ...existing,
-      status: "sent",
-      sentAt,
-      updatedAt: sentAt,
-      lastSendResult: result,
-    };
+      const sentAt = new Date().toISOString();
+      const nextDraft: DraftRecord = {
+        ...existing,
+        status: "sent",
+        sentAt,
+        updatedAt: sentAt,
+        lastSendResult: result,
+      };
 
-    store.updatedAt = sentAt;
-    store.drafts[id] = nextDraft;
-    await this.save(store);
-    return nextDraft;
+      store.updatedAt = sentAt;
+      store.drafts[id] = nextDraft;
+      await this.save(store);
+      return nextDraft;
+    });
   }
 
   async markRemoteSynced(id: string, remoteDraft: RemoteDraftRef): Promise<DraftRecord> {
-    const store = await this.load();
-    const existing = store.drafts[id];
-    if (!existing) {
-      throw new Error(`Draft not found for id ${id}`);
-    }
+    return this.withLock(async () => {
+      const store = await this.loadUnlocked();
+      const existing = store.drafts[id];
+      if (!existing) {
+        throw new Error(`Draft not found for id ${id}`);
+      }
 
-    const updatedAt = new Date().toISOString();
-    const nextDraft: DraftRecord = {
-      ...existing,
-      updatedAt,
-      remoteSyncState: "synced",
-      remoteSyncError: undefined,
-      remoteDraft,
-    };
+      const updatedAt = new Date().toISOString();
+      const nextDraft: DraftRecord = {
+        ...existing,
+        updatedAt,
+        remoteSyncState: "synced",
+        remoteSyncError: undefined,
+        remoteDraft,
+      };
 
-    store.updatedAt = updatedAt;
-    store.drafts[id] = nextDraft;
-    await this.save(store);
-    return nextDraft;
+      store.updatedAt = updatedAt;
+      store.drafts[id] = nextDraft;
+      await this.save(store);
+      return nextDraft;
+    });
   }
 
   async markRemoteSyncError(id: string, message: string): Promise<DraftRecord> {
-    const store = await this.load();
-    const existing = store.drafts[id];
-    if (!existing) {
-      throw new Error(`Draft not found for id ${id}`);
-    }
+    return this.withLock(async () => {
+      const store = await this.loadUnlocked();
+      const existing = store.drafts[id];
+      if (!existing) {
+        throw new Error(`Draft not found for id ${id}`);
+      }
 
-    const updatedAt = new Date().toISOString();
-    const nextDraft: DraftRecord = {
-      ...existing,
-      updatedAt,
-      remoteSyncState: "sync_failed",
-      remoteSyncError: message,
-    };
+      const updatedAt = new Date().toISOString();
+      const nextDraft: DraftRecord = {
+        ...existing,
+        updatedAt,
+        remoteSyncState: "sync_failed",
+        remoteSyncError: message,
+      };
 
-    store.updatedAt = updatedAt;
-    store.drafts[id] = nextDraft;
-    await this.save(store);
-    return nextDraft;
+      store.updatedAt = updatedAt;
+      store.drafts[id] = nextDraft;
+      await this.save(store);
+      return nextDraft;
+    });
   }
 
   async clearRemoteSync(id: string): Promise<DraftRecord> {
-    const store = await this.load();
-    const existing = store.drafts[id];
-    if (!existing) {
-      throw new Error(`Draft not found for id ${id}`);
-    }
+    return this.withLock(async () => {
+      const store = await this.loadUnlocked();
+      const existing = store.drafts[id];
+      if (!existing) {
+        throw new Error(`Draft not found for id ${id}`);
+      }
 
-    const updatedAt = new Date().toISOString();
-    const nextDraft: DraftRecord = {
-      ...existing,
-      updatedAt,
-      remoteSyncState: "local_only",
-      remoteSyncError: undefined,
-      remoteDraft: undefined,
-    };
+      const updatedAt = new Date().toISOString();
+      const nextDraft: DraftRecord = {
+        ...existing,
+        updatedAt,
+        remoteSyncState: "local_only",
+        remoteSyncError: undefined,
+        remoteDraft: undefined,
+      };
 
-    store.updatedAt = updatedAt;
-    store.drafts[id] = nextDraft;
-    await this.save(store);
-    return nextDraft;
+      store.updatedAt = updatedAt;
+      store.drafts[id] = nextDraft;
+      await this.save(store);
+      return nextDraft;
+    });
   }
 
   async deleteDraft(id: string): Promise<{ id: string; removed: boolean }> {
-    const store = await this.load();
-    if (!store.drafts[id]) {
-      return { id, removed: false };
-    }
+    return this.withLock(async () => {
+      const store = await this.loadUnlocked();
+      if (!store.drafts[id]) {
+        return { id, removed: false };
+      }
 
-    delete store.drafts[id];
-    store.updatedAt = new Date().toISOString();
-    await this.save(store);
-    return { id, removed: true };
+      delete store.drafts[id];
+      store.updatedAt = new Date().toISOString();
+      await this.save(store);
+      return { id, removed: true };
+    });
   }
 
   async clear(): Promise<{ path: string; removed: boolean }> {
-    this.loadedStore = undefined;
-    try {
-      await rm(this.draftPath);
-      return { path: this.draftPath, removed: true };
-    } catch (error) {
-      if (
-        error &&
-        typeof error === "object" &&
-        "code" in error &&
-        (error as { code?: string }).code === "ENOENT"
-      ) {
-        return { path: this.draftPath, removed: false };
+    return this.withLock(async () => {
+      this.loadedStore = undefined;
+      try {
+        await rm(this.draftPath);
+        return { path: this.draftPath, removed: true };
+      } catch (error) {
+        if (
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          (error as { code?: string }).code === "ENOENT"
+        ) {
+          return { path: this.draftPath, removed: false };
+        }
+        this.log.warn("Failed to clear draft store", "DraftStoreService", error);
+        throw error;
       }
-      this.log.warn("Failed to clear draft store", "DraftStoreService", error);
-      throw error;
-    }
+    });
+  }
+
+  private async withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this._lock.then(fn, fn);
+    this._lock = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   private async load(): Promise<DraftStoreFile> {
+    return this.withLock(() => this.loadUnlocked());
+  }
+
+  private async loadUnlocked(): Promise<DraftStoreFile> {
     if (this.loadedStore) {
       return this.loadedStore;
     }
