@@ -5,17 +5,18 @@ All notable changes to this project are documented here.
 ## [1.13.2] — 2026-06-09
 
 ### Fixed
-- `save_attachment` `saveTo` parameter was silently ignored — now wired with path traversal protection
-- `search_emails` schema was missing `senderDomain`, `mailboxRole`, `messageId`, `cc`, `bcc` — all now exposed
-- `get_contacts` description now discloses results are frequency-derived from email history, not a Proton address book
+- `save_attachment` `saveTo` parameter was silently ignored — now wired with path traversal protection matching `get_attachment_content`
+- `search_emails` schema was missing `senderDomain`, `mailboxRole`, `messageId`, `cc`, `bcc` — all now exposed and callable
+- `get_contacts` description now discloses that results are frequency-derived from email history, not a Proton address book
 
 ### Added
-- CC/BCC IMAP search criteria on `search_emails` — server-side CC and BCC filtering
-- `folders[]` parameter on `get_thread_by_id` — scope thread resolution to specific folders
-- Sent-copy verification on all send tools — appends `[sent-copy:verified]` or `[sent-copy:unverified]` to every send result with up to 30s retry
-- `PROTONMAIL_MAX_INLINE_BYTES` env var — configurable inline attachment cap in KB (default: 40)
-- `noselect` field on folders returned by `get_folders` — IMAP Noselect flag surfaced; special-use attributes resolved from IMAP server attributes
-- Prompt-injection warning added to `includeSnippet` parameter descriptions
+- CC/BCC IMAP search criteria on `search_emails` — server-side `cc` and `bcc` filter parameters
+- `folders[]` parameter on `get_thread_by_id` — scope thread resolution to specific folders instead of searching all
+- Sent-copy verification on all send tools — every send result includes `[sent-copy:verified]` or `[sent-copy:unverified]`; retries for up to 30 seconds
+- `PROTONMAIL_MAX_INLINE_BYTES` env var — configurable inline attachment size cap in KB (default: 40); replaces hardcoded limit
+- `noselect` field on folders returned by `get_folders` — IMAP Noselect attribute surfaced; special-use resolved from server attributes before name heuristics
+- Prompt-injection warning in `includeSnippet` parameter descriptions on `get_emails` and `search_emails`
+- Rate limiter infrastructure in IMAP service (groundwork for future `PROTONMAIL_OP_DELAY_MS`)
 
 ## [1.13.1] — 2026-06-09
 
