@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here.
 
+## [1.13.2] — 2026-06-09
+
+### Fixed
+- `save_attachment` `saveTo` parameter was silently ignored — now wired with path traversal protection
+- `search_emails` schema was missing `senderDomain`, `mailboxRole`, `messageId`, `cc`, `bcc` — all now exposed
+- `get_contacts` description now discloses results are frequency-derived from email history, not a Proton address book
+
+### Added
+- CC/BCC IMAP search criteria on `search_emails` — server-side CC and BCC filtering
+- `folders[]` parameter on `get_thread_by_id` — scope thread resolution to specific folders
+- Sent-copy verification on all send tools — appends `[sent-copy:verified]` or `[sent-copy:unverified]` to every send result with up to 30s retry
+- `PROTONMAIL_MAX_INLINE_BYTES` env var — configurable inline attachment cap in KB (default: 40)
+- `noselect` field on folders returned by `get_folders` — IMAP Noselect flag surfaced; special-use attributes resolved from IMAP server attributes
+- Prompt-injection warning added to `includeSnippet` parameter descriptions
+
 ## [1.13.1] — 2026-06-09
 
 ### Added
