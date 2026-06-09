@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -1350,12 +1350,11 @@ async function runWatch(parsed: ParsedCliArgs): Promise<void> {
 }
 
 async function sendSystemNotification(title: string, body: string): Promise<void> {
-  const execAsync = promisify(exec);
+  const execFileAsync = promisify(execFile);
   try {
     if (process.platform === "darwin") {
-      const t = title.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-      const b = body.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-      await execAsync(`osascript -e 'display notification "${b}" with title "${t}"'`);
+      const script = `display notification ${JSON.stringify(body)} with title ${JSON.stringify(title)}`;
+      await execFileAsync("osascript", ["-e", script]);
     } else if (process.platform === "linux") {
       const { spawn } = await import("node:child_process");
       await new Promise<void>((resolve) => {
