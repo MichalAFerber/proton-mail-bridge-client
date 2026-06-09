@@ -2,6 +2,48 @@
 
 All notable changes to this project are documented here.
 
+## [1.13.5] — 2026-06-09
+
+### Security
+- outputPath now throws when PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR is unset (prevented arbitrary filesystem writes)
+- inReplyTo and references fields now sanitized against SMTP header injection
+- sanitizeHtml bypass requires explicit PROTONMAIL_ALLOW_UNSAFE_HTML=true opt-in
+- Path traversal guard upgraded to use realpathSync (symlink bypass closed)
+- get_connection_status and run_doctor no longer leak raw connection error details
+- DEBUG log no longer includes full tool arguments (only argument key names)
+- PROTONMAIL_ALLOWED_ACTIONS with all-invalid values now throws at startup instead of silently opening all actions
+- maxBodyLength now enforced with a 500000 character cap
+
+### Performance
+- Attachment size checked against IMAP bodyStructure before downloading full message (prevents OOM)
+- getThreads now pushes folder and label filters into SQL before materializing results
+- New composite SQL index (folder, internal_date DESC) for common query pattern
+
+### Reliability
+- applySnapshot now deletes server-expunged messages from local SQLite index
+- UIDVALIDITY change detected during sync: stale folder index is cleared and re-indexed
+- Label remove operation is now atomic within a single IMAP mailbox session
+
+### MCP Annotations
+- delete_draft corrected to destructiveHint: true
+- empty_folder now has destructiveHint: true annotation
+- 7 draft/read tools now have correct readOnlyHint or destructiveHint annotations
+- clear_cache corrected to destructiveHint: false
+- folder_stats schema now declares default: "INBOX"
+
+### CLI
+- bulk-delete CLI: added --permanent, --subject, --since, --before, --max, --confirmed flags
+- bulk-move CLI: added --subject, --since, --before, --max flags
+- get-logs CLI: added --level and --offset flags
+
+### Infra
+- CI matrix now includes Node.js 24
+- npm audit added to CI pipeline
+- Tests added for sanitizeHeader, emptyFolder INBOX guard, DraftStore mutex
+
+### Known gaps
+- 18 MCP tools have no CLI shorthand (reachable via `tool <name>` passthrough)
+
 ## [1.13.4] — 2026-06-09
 
 ### Security
