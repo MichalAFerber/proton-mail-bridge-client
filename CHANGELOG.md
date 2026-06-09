@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented here.
 
+## [1.13.3] — 2026-06-09
+
+### Fixed (Critical / High)
+- **Security**: `send_draft` now enforces `PROTONMAIL_RESTRICT_OUTBOUND_TO_SELF` policy — previously bypassed, allowing external sends regardless of the lock
+- **Security**: `PROTONMAIL_SMTP_HOST` now defaults to `127.0.0.1` (Bridge) instead of `smtp.protonmail.ch` (public server) — prevents silent Bridge bypass
+- `search_emails` handler now passes `senderDomain`, `mailboxRole`, `messageId`, `cc`, `bcc` to the service — previously silently dropped
+- `get_emails` handler now passes `beforeUid` and `sortByUid` — UID-cursor pagination and sort order were silently dropped
+- `get_thread_by_id` `folders[]` parameter is now wired — was extracted and immediately discarded
+- `search_emails` `cc`/`bcc` descriptions corrected — were falsely claiming server-side IMAP search
+- `sentCopyVerify` now resolves the Sent folder via special-use attributes and name fallbacks — hardcoded "Sent" failed on non-standard folder names
+
+### Added
+- `send_draft` now supports `dryRun` — preview without sending, consistent with all other send tools
+- Bulk operations now enforce a configurable `maxBatchSize` (default 500, max 2000) — prevents runaway operations
+- `apply_thread_action` now supports `move` and `delete` actions
+- `count_messages` schema expanded to match `search_emails`: added `to`, `hasAttachment`, `label`, `threadId`, `senderDomain`
+- `delete_folder` now gated on `PROTONMAIL_CONFIRM_DESTRUCTIVE` policy (adds `confirmed` parameter)
+- `get_logs` and `get_audit_logs` now support `offset` pagination
+- `get_email_analytics` and `get_email_stats` now accept `days` and `limit` parameters — previously hardcoded to 30d/100 messages
+- `PROTONMAIL_OP_DELAY_MS` env var — wires the rate limiter infrastructure added in v1.13.2; add inter-operation delay in ms (default 0)
+- `clear_index` and `clear_cache` now carry `destructiveHint: true` MCP annotation
+- `empty_folder` now respects `PROTONMAIL_CONFIRM_DESTRUCTIVE` policy via `ensureDestructiveConfirmed`
+- `send_test_email` now enforces `ensureSendAllowed` policy
+- `batch_email_action` hidden `preview` alias removed — use `dryRun` exclusively
+- Bulk ops now correctly distinguish `notFound` from `failed` in result counts
+- `create_label` now validates that the name is not empty
+
 ## [1.13.2] — 2026-06-09
 
 ### Fixed
