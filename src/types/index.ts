@@ -261,10 +261,46 @@ export interface FolderInfo {
   uidNext?: number;
 }
 
+export interface BulkMatchCriteria {
+  from?: string;
+  subject?: string;
+  text?: string;
+  since?: string;
+  before?: string;
+  isRead?: boolean;
+  isStarred?: boolean;
+  sizeLarger?: number;
+  sizeSmaller?: number;
+}
+
+export interface BulkOperationResult {
+  dryRun: boolean;
+  total: number;
+  succeeded: number;
+  failed: number;
+  notFound: number;
+  results: Array<{
+    uid: number;
+    emailId: string;
+    ok: boolean;
+    error?: string;
+    notApplied?: string[];
+  }>;
+}
+
+export interface SenderFrequency {
+  address: string;
+  name?: string;
+  count: number;
+  direction: "received" | "self";
+}
+
 export interface GetEmailsInput {
   folder?: string;
   limit?: number;
   offset?: number;
+  beforeUid?: number;
+  sortByUid?: "asc" | "desc";
   includeSnippet?: boolean;
 }
 
@@ -349,6 +385,8 @@ export interface ProtonRuntimeConfig {
   idleMaxSeconds: number;
   confirmDestructive: boolean;
   allowEmptyFolder: boolean;
+  restrictOutboundToSelf: boolean;
+  allowFileDownloadDir?: string;
 }
 
 export interface BackgroundSyncStatus {

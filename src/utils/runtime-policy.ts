@@ -14,6 +14,8 @@ export function sanitizeRuntimeConfig(runtime: ProtonRuntimeConfig): Record<stri
     idleMaxSeconds: runtime.idleMaxSeconds,
     confirmDestructive: runtime.confirmDestructive,
     allowEmptyFolder: runtime.allowEmptyFolder,
+    restrictOutboundToSelf: runtime.restrictOutboundToSelf,
+    allowFileDownloadDir: runtime.allowFileDownloadDir ?? null,
   };
 }
 

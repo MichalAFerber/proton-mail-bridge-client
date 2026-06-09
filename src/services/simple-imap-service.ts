@@ -4,6 +4,8 @@ import { ImapFlow, type FetchMessageObject, type ListResponse, type SearchObject
 import { simpleParser, type ParsedMail } from "mailparser";
 import type {
   AttachmentContentResult,
+  BulkMatchCriteria,
+  BulkOperationResult,
   EmailDetail,
   EmailSummary,
   FolderInfo,
@@ -12,6 +14,7 @@ import type {
   ProtonMailConfig,
   RemoteDraftRef,
   SearchEmailsInput,
+  SenderFrequency,
   SendEmailInput,
   SyncEmailsInput,
 } from "../types/index.js";
@@ -525,27 +528,57 @@ export class SimpleIMAPService {
         return { folder, total, limit, offset, emails: [] };
       }
 
-      const endSeq = total - offset;
-      const startSeq = Math.max(1, endSeq - limit + 1);
       const emails: EmailSummary[] = [];
       const fetchQuery = input.includeSnippet ? FETCH_DETAIL_QUERY : FETCH_SUMMARY_QUERY;
 
-      for await (const message of client.fetch(`${startSeq}:${endSeq}`, fetchQuery)) {
-        const summary = this.toSummary(folder, message);
-        const enriched =
-          input.includeSnippet && message.source
-            ? await this.enrichSummaryFromParsed(summary, await this.parseSource(message.source), false)
-            : summary;
-        emails.push(enriched);
-        this.messageCache.set(enriched.id, enriched);
+      if (input.beforeUid !== undefined) {
+        // UID-based pagination: search for UIDs below the given upper bound
+        const searchQuery: SearchObject = { uid: `1:${input.beforeUid - 1}` };
+        const uids = await client.search(searchQuery, { uid: true });
+        if (!uids || uids.length === 0) {
+          return { folder, total, limit, offset, emails: [] };
+        }
+        const sorted = input.sortByUid === "asc" ? uids.sort((a, b) => a - b) : uids.sort((a, b) => b - a);
+        const page = sorted.slice(offset, offset + limit);
+        if (page.length === 0) {
+          return { folder, total, limit, offset, emails: [] };
+        }
+        const uidSet = page.join(",");
+        for await (const message of client.fetch(uidSet, fetchQuery, { uid: true })) {
+          const summary = this.toSummary(folder, message);
+          const enriched =
+            input.includeSnippet && message.source
+              ? await this.enrichSummaryFromParsed(summary, await this.parseSource(message.source), false)
+              : summary;
+          emails.push(enriched);
+          this.messageCache.set(enriched.id, enriched);
+        }
+      } else {
+        const endSeq = total - offset;
+        const startSeq = Math.max(1, endSeq - limit + 1);
+
+        for await (const message of client.fetch(`${startSeq}:${endSeq}`, fetchQuery)) {
+          const summary = this.toSummary(folder, message);
+          const enriched =
+            input.includeSnippet && message.source
+              ? await this.enrichSummaryFromParsed(summary, await this.parseSource(message.source), false)
+              : summary;
+          emails.push(enriched);
+          this.messageCache.set(enriched.id, enriched);
+        }
       }
+
+      const sorted =
+        input.sortByUid === "asc"
+          ? emails.sort((a, b) => a.uid - b.uid)
+          : sortEmailsByNewest(emails);
 
       return {
         folder,
         total,
         limit,
         offset,
-        emails: sortEmailsByNewest(emails),
+        emails: sorted,
       };
     });
   }
@@ -1000,7 +1033,7 @@ export class SimpleIMAPService {
     return { folder, count };
   }
 
-  async getFolderStats(folder?: string): Promise<{
+  async getFolderStats(folder?: string, scanLimit?: number): Promise<{
     folder: string;
     total: number;
     unseen: number;
@@ -1043,6 +1076,461 @@ export class SimpleIMAPService {
     }
 
     return { folder, deleted: uids.length };
+  }
+
+  private async resolveUidsForBulkOp(
+    folder: string,
+    emailIds: string[] | undefined,
+    match: BulkMatchCriteria | undefined,
+  ): Promise<number[]> {
+    if (emailIds !== undefined && match !== undefined) {
+      throw new Error("Provide either emailIds or match, not both");
+    }
+    if (emailIds === undefined && match === undefined) {
+      throw new Error("Provide either emailIds or match");
+    }
+
+    if (emailIds !== undefined) {
+      return emailIds
+        .map((id) => parseEmailId(id))
+        .filter((parsed) => parsed.folder === folder)
+        .map((parsed) => parsed.uid);
+    }
+
+    // match path
+    const searchInput: SearchEmailsInput = {
+      folder,
+      from: match!.from,
+      subject: match!.subject,
+      query: match!.text,
+      dateFrom: match!.since,
+      dateTo: match!.before,
+      isRead: match!.isRead,
+      isStarred: match!.isStarred,
+      sizeLarger: match!.sizeLarger,
+      sizeSmaller: match!.sizeSmaller,
+    };
+    const query = this.buildSearchQuery(searchInput);
+    return this.withMailbox(folder, true, async (client) => {
+      const found = await client.search(query, { uid: true });
+      return Array.isArray(found) ? found : [];
+    });
+  }
+
+  async bulkMove(input: {
+    emailIds?: string[];
+    match?: BulkMatchCriteria;
+    folder?: string;
+    targetFolder: string;
+    dryRun?: boolean;
+  }): Promise<BulkOperationResult> {
+    const folder = input.folder?.trim() || "INBOX";
+    const uids = await this.resolveUidsForBulkOp(folder, input.emailIds, input.match);
+
+    if (input.dryRun) {
+      return {
+        dryRun: true,
+        total: uids.length,
+        succeeded: 0,
+        failed: 0,
+        notFound: 0,
+        results: [],
+      };
+    }
+
+    let succeeded = 0;
+    let failed = 0;
+    const results: BulkOperationResult["results"] = [];
+
+    for (const uid of uids) {
+      const emailId = createEmailId(folder, uid);
+      try {
+        await this.withMailbox(folder, false, async (client) => {
+          const moved = await client.messageMove(String(uid), input.targetFolder, { uid: true });
+          if (moved === false) {
+            throw new Error(`Server did not move uid ${uid}`);
+          }
+        });
+        this.messageCache.delete(emailId);
+        results.push({ uid, emailId, ok: true });
+        succeeded++;
+      } catch (err) {
+        results.push({ uid, emailId, ok: false, error: String(err) });
+        failed++;
+      }
+    }
+
+    this.lastSyncAt = new Date().toISOString();
+    return { dryRun: false, total: uids.length, succeeded, failed, notFound: 0, results };
+  }
+
+  async bulkDelete(input: {
+    emailIds?: string[];
+    match?: BulkMatchCriteria;
+    folder?: string;
+    permanent?: boolean;
+    dryRun?: boolean;
+  }): Promise<BulkOperationResult> {
+    const folder = input.folder?.trim() || "INBOX";
+    const uids = await this.resolveUidsForBulkOp(folder, input.emailIds, input.match);
+
+    if (input.dryRun) {
+      return {
+        dryRun: true,
+        total: uids.length,
+        succeeded: 0,
+        failed: 0,
+        notFound: 0,
+        results: [],
+      };
+    }
+
+    const trashFolder = input.permanent
+      ? undefined
+      : await this.resolveSpecialFolder("\\Trash", ["Trash", "INBOX.Trash"]);
+
+    let succeeded = 0;
+    let failed = 0;
+    const results: BulkOperationResult["results"] = [];
+
+    for (const uid of uids) {
+      const emailId = createEmailId(folder, uid);
+      try {
+        if (input.permanent || !trashFolder) {
+          await this.withMailbox(folder, false, async (client) => {
+            const deleted = await client.messageDelete(String(uid), { uid: true });
+            if (!deleted) throw new Error(`Server did not delete uid ${uid}`);
+          });
+        } else {
+          await this.withMailbox(folder, false, async (client) => {
+            const moved = await client.messageMove(String(uid), trashFolder, { uid: true });
+            if (moved === false) throw new Error(`Server did not move uid ${uid} to trash`);
+          });
+        }
+        this.messageCache.delete(emailId);
+        results.push({ uid, emailId, ok: true });
+        succeeded++;
+      } catch (err) {
+        results.push({ uid, emailId, ok: false, error: String(err) });
+        failed++;
+      }
+    }
+
+    this.lastSyncAt = new Date().toISOString();
+    return { dryRun: false, total: uids.length, succeeded, failed, notFound: 0, results };
+  }
+
+  async bulkUpdateFlags(input: {
+    emailIds?: string[];
+    match?: BulkMatchCriteria;
+    folder?: string;
+    flagsToAdd?: string[];
+    flagsToRemove?: string[];
+    dryRun?: boolean;
+  }): Promise<BulkOperationResult> {
+    const folder = input.folder?.trim() || "INBOX";
+    const uids = await this.resolveUidsForBulkOp(folder, input.emailIds, input.match);
+
+    if (input.dryRun) {
+      return {
+        dryRun: true,
+        total: uids.length,
+        succeeded: 0,
+        failed: 0,
+        notFound: 0,
+        results: [],
+      };
+    }
+
+    const flagsToAdd = input.flagsToAdd ?? [];
+    const flagsToRemove = input.flagsToRemove ?? [];
+    let succeeded = 0;
+    let failed = 0;
+    const results: BulkOperationResult["results"] = [];
+
+    for (const uid of uids) {
+      const emailId = createEmailId(folder, uid);
+      try {
+        let notApplied: string[] = [];
+        await this.withMailbox(folder, false, async (client) => {
+          if (flagsToAdd.length > 0) {
+            await client.messageFlagsAdd(String(uid), flagsToAdd, { uid: true });
+          }
+          if (flagsToRemove.length > 0) {
+            await client.messageFlagsRemove(String(uid), flagsToRemove, { uid: true });
+          }
+          const notAppliedAdds = flagsToAdd.length > 0
+            ? await this.verifyFlags(client, uid, flagsToAdd, true)
+            : [];
+          const notAppliedRemoves = flagsToRemove.length > 0
+            ? await this.verifyFlags(client, uid, flagsToRemove, false)
+            : [];
+          notApplied = [...notAppliedAdds, ...notAppliedRemoves];
+        });
+        results.push({ uid, emailId, ok: true, notApplied });
+        succeeded++;
+      } catch (err) {
+        results.push({ uid, emailId, ok: false, error: String(err) });
+        failed++;
+      }
+    }
+
+    return { dryRun: false, total: uids.length, succeeded, failed, notFound: 0, results };
+  }
+
+  async bulkUpdateLabels(input: {
+    emailIds?: string[];
+    match?: BulkMatchCriteria;
+    folder?: string;
+    labelsToAdd?: string[];
+    labelsToRemove?: string[];
+    dryRun?: boolean;
+  }): Promise<BulkOperationResult> {
+    const folder = input.folder?.trim() || "INBOX";
+    const uids = await this.resolveUidsForBulkOp(folder, input.emailIds, input.match);
+
+    if (input.dryRun) {
+      return {
+        dryRun: true,
+        total: uids.length,
+        succeeded: 0,
+        failed: 0,
+        notFound: 0,
+        results: [],
+      };
+    }
+
+    const labelsToAdd = input.labelsToAdd ?? [];
+    const labelsToRemove = input.labelsToRemove ?? [];
+    let succeeded = 0;
+    let failed = 0;
+    const results: BulkOperationResult["results"] = [];
+
+    for (const uid of uids) {
+      const emailId = createEmailId(folder, uid);
+      try {
+        await this.updateMessageLabels(emailId, labelsToAdd, labelsToRemove);
+        results.push({ uid, emailId, ok: true });
+        succeeded++;
+      } catch (err) {
+        results.push({ uid, emailId, ok: false, error: String(err) });
+        failed++;
+      }
+    }
+
+    return { dryRun: false, total: uids.length, succeeded, failed, notFound: 0, results };
+  }
+
+  async topSenders(input: {
+    folder?: string;
+    since?: string;
+    before?: string;
+    limit?: number;
+    scanLimit?: number;
+    excludeSelf?: boolean;
+  }): Promise<{ folder: string; scanned: number; senders: SenderFrequency[] }> {
+    const folder = input.folder?.trim() || "INBOX";
+    const scanLimit = input.scanLimit ?? 5000;
+    const topLimit = input.limit ?? 20;
+    const selfAddress = this.config.smtp.username.toLowerCase();
+
+    const searchInput: SearchEmailsInput = {
+      folder,
+      dateFrom: input.since,
+      dateTo: input.before,
+    };
+    const query = this.buildSearchQuery(searchInput);
+
+    const uids: number[] = await this.withMailbox(folder, true, async (client) => {
+      const found = await client.search(query, { uid: true });
+      return Array.isArray(found) ? found : [];
+    });
+
+    const page = uids.slice(-scanLimit);
+    if (page.length === 0) {
+      return { folder, scanned: 0, senders: [] };
+    }
+
+    const uidSet = page.join(",");
+    const freq = new Map<string, SenderFrequency>();
+
+    await this.withMailbox(folder, true, async (client) => {
+      for await (const message of client.fetch(uidSet, FETCH_SUMMARY_QUERY, { uid: true })) {
+        const fromAddrs = mapEnvelopeAddresses(message.envelope?.from);
+        if (fromAddrs.length === 0) continue;
+        const addr = (fromAddrs[0].address ?? "").toLowerCase();
+        if (!addr) continue;
+        if (input.excludeSelf && addr === selfAddress) continue;
+        const existing = freq.get(addr);
+        if (existing) {
+          existing.count++;
+        } else {
+          freq.set(addr, {
+            address: addr,
+            name: fromAddrs[0].name,
+            count: 1,
+            direction: addr === selfAddress ? "self" : "received",
+          });
+        }
+      }
+    });
+
+    const sorted = Array.from(freq.values()).sort((a, b) => b.count - a.count).slice(0, topLimit);
+    return { folder, scanned: page.length, senders: sorted };
+  }
+
+  private async resolveThreadUids(
+    messageId: string,
+    acrossFolders: boolean,
+    folders?: string[],
+  ): Promise<Array<{ folder: string; uid: number; emailId: string }>> {
+    const results: Array<{ folder: string; uid: number; emailId: string }> = [];
+
+    const foldersToSearch = acrossFolders
+      ? (folders ?? await (async () => {
+          const special: string[] = [];
+          try { special.push(await this.resolveSpecialFolder("\\Inbox", ["INBOX"])); } catch { special.push("INBOX"); }
+          try { special.push(await this.resolveSpecialFolder("\\Sent", ["Sent", "Sent Mail", "INBOX.Sent"])); } catch { /* skip */ }
+          try { special.push(await this.resolveSpecialFolder("\\All", ["All Mail", "[Gmail]/All Mail"])); } catch { /* skip */ }
+          return special;
+        })())
+      : ["INBOX"];
+
+    for (const folder of foldersToSearch) {
+      try {
+        const [byMsgId, byRefs] = await Promise.all([
+          this.withMailbox(folder, true, async (client) => {
+            const found = await client.search({ header: { "Message-ID": messageId } }, { uid: true });
+            return Array.isArray(found) ? found : [];
+          }).catch(() => [] as number[]),
+          this.withMailbox(folder, true, async (client) => {
+            const found = await client.search({ header: { "References": messageId } }, { uid: true });
+            return Array.isArray(found) ? found : [];
+          }).catch(() => [] as number[]),
+        ]);
+        const seen = new Set<number>();
+        for (const uid of [...byMsgId, ...byRefs]) {
+          if (!seen.has(uid)) {
+            seen.add(uid);
+            results.push({ folder, uid, emailId: createEmailId(folder, uid) });
+          }
+        }
+      } catch { /* skip inaccessible folders */ }
+    }
+
+    return results;
+  }
+
+  async moveThread(input: {
+    messageId: string;
+    destination: string;
+    acrossFolders?: boolean;
+    dryRun?: boolean;
+  }): Promise<{ messageId: string; destination: string; moved: number; notMoved: number; dryRun: boolean }> {
+    const matches = await this.resolveThreadUids(input.messageId, input.acrossFolders ?? false);
+
+    if (input.dryRun) {
+      return { messageId: input.messageId, destination: input.destination, moved: matches.length, notMoved: 0, dryRun: true };
+    }
+
+    let moved = 0;
+    let notMoved = 0;
+
+    for (const { folder, uid, emailId } of matches) {
+      try {
+        await this.withMailbox(folder, false, async (client) => {
+          const result = await client.messageMove(String(uid), input.destination, { uid: true });
+          if (result === false) throw new Error(`Server did not move uid ${uid}`);
+        });
+        this.messageCache.delete(emailId);
+        moved++;
+      } catch {
+        notMoved++;
+      }
+    }
+
+    this.lastSyncAt = new Date().toISOString();
+    return { messageId: input.messageId, destination: input.destination, moved, notMoved, dryRun: false };
+  }
+
+  async deleteThread(input: {
+    messageId: string;
+    permanent?: boolean;
+    acrossFolders?: boolean;
+    dryRun?: boolean;
+  }): Promise<{ messageId: string; deleted: number; dryRun: boolean }> {
+    const matches = await this.resolveThreadUids(input.messageId, input.acrossFolders ?? false);
+
+    if (input.dryRun) {
+      return { messageId: input.messageId, deleted: matches.length, dryRun: true };
+    }
+
+    const trashFolder = input.permanent
+      ? undefined
+      : await this.resolveSpecialFolder("\\Trash", ["Trash", "INBOX.Trash"]).catch(() => undefined);
+
+    let deleted = 0;
+
+    for (const { folder, uid, emailId } of matches) {
+      try {
+        if (input.permanent || !trashFolder) {
+          await this.withMailbox(folder, false, async (client) => {
+            await client.messageDelete(String(uid), { uid: true });
+          });
+        } else {
+          await this.withMailbox(folder, false, async (client) => {
+            await client.messageMove(String(uid), trashFolder, { uid: true });
+          });
+        }
+        this.messageCache.delete(emailId);
+        deleted++;
+      } catch { /* best-effort */ }
+    }
+
+    this.lastSyncAt = new Date().toISOString();
+    return { messageId: input.messageId, deleted, dryRun: false };
+  }
+
+  async flagThread(input: {
+    messageId: string;
+    flagsToAdd?: string[];
+    flagsToRemove?: string[];
+    acrossFolders?: boolean;
+    dryRun?: boolean;
+  }): Promise<{ messageId: string; affected: number; notApplied: string[]; dryRun: boolean }> {
+    const matches = await this.resolveThreadUids(input.messageId, input.acrossFolders ?? false);
+
+    if (input.dryRun) {
+      return { messageId: input.messageId, affected: matches.length, notApplied: [], dryRun: true };
+    }
+
+    const flagsToAdd = input.flagsToAdd ?? [];
+    const flagsToRemove = input.flagsToRemove ?? [];
+    let affected = 0;
+    const allNotApplied: string[] = [];
+
+    for (const { folder, uid } of matches) {
+      try {
+        await this.withMailbox(folder, false, async (client) => {
+          if (flagsToAdd.length > 0) {
+            await client.messageFlagsAdd(String(uid), flagsToAdd, { uid: true });
+          }
+          if (flagsToRemove.length > 0) {
+            await client.messageFlagsRemove(String(uid), flagsToRemove, { uid: true });
+          }
+          const notAppliedAdds = flagsToAdd.length > 0
+            ? await this.verifyFlags(client, uid, flagsToAdd, true)
+            : [];
+          const notAppliedRemoves = flagsToRemove.length > 0
+            ? await this.verifyFlags(client, uid, flagsToRemove, false)
+            : [];
+          allNotApplied.push(...notAppliedAdds, ...notAppliedRemoves);
+        });
+        affected++;
+      } catch { /* best-effort */ }
+    }
+
+    return { messageId: input.messageId, affected, notApplied: [...new Set(allNotApplied)], dryRun: false };
   }
 
   async syncEmails(input: SyncEmailsInput = {}): Promise<{

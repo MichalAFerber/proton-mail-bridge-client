@@ -25,6 +25,7 @@ import { SMTPService } from "./services/smtp-service.js";
 import type {
   BatchActionEntry,
   BatchActionResult,
+  BulkMatchCriteria,
   CitationSource,
   DraftRecord,
   EmailAction,
@@ -90,6 +91,7 @@ const TOOLS = [
   {
     name: "send_email",
     description: "Compose and immediately send a new outbound email through Proton Bridge SMTP. Use for one-shot messages that need no review. Prefer create_draft when you want to save and review before sending, or reply_to_email when responding to an existing message. Fails if PROTONMAIL_ALLOW_SEND is false or if Bridge SMTP is unreachable. Returns delivery confirmation.",
+    annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -124,6 +126,7 @@ const TOOLS = [
           },
         },
         confirmed: { type: "boolean", description: "Set to true to confirm this irreversible send when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
+        dryRun: { type: "boolean", description: "Preview the full recipient set and validate without sending.", default: false },
       },
       required: ["to", "subject"],
     },
@@ -131,6 +134,7 @@ const TOOLS = [
   {
     name: "send_test_email",
     description: "Send a minimal diagnostic email to confirm Proton Bridge SMTP credentials and connectivity. Use before relying on send_email in a new environment. Prefer get_connection_status for a connectivity check that does not actually send mail. Returns transport debug info and delivery status.",
+    annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -143,6 +147,7 @@ const TOOLS = [
   {
     name: "reply_to_email",
     description: "Immediately send a reply to an existing email, threading it correctly via In-Reply-To and References headers. Use when you have an emailId and want to send the reply right away. Prefer create_reply_draft to save the reply for review first, or create_thread_reply_draft when replying from a threadId. Use reply_all_email to reply to all original recipients. Requires PROTONMAIL_ALLOW_SEND.",
+    annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -171,6 +176,8 @@ const TOOLS = [
           },
         },
         confirmed: { type: "boolean", description: "Set to true to confirm this irreversible send when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
+        dryRun: { type: "boolean", description: "Preview recipient set and threading headers without sending.", default: false },
+        includeQuote: { type: "boolean", description: "Append the quoted original message to the reply body.", default: true },
       },
       required: ["emailId"],
     },
@@ -178,6 +185,7 @@ const TOOLS = [
   {
     name: "reply_all_email",
     description: "Immediately reply to all original recipients (sender + all To/CC addresses) of an existing email. Identical to reply_to_email with replyAll enabled. Use when the conversation involves multiple parties and all should receive the reply. Threading headers (In-Reply-To, References) are preserved. Requires PROTONMAIL_ALLOW_SEND.",
+    annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -205,6 +213,8 @@ const TOOLS = [
           },
         },
         confirmed: { type: "boolean", description: "Set to true to confirm this irreversible send when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
+        dryRun: { type: "boolean", description: "Preview full reply-all fan-out without sending.", default: false },
+        includeQuote: { type: "boolean", description: "Append the quoted original message to the reply body.", default: true },
       },
       required: ["emailId"],
     },
@@ -212,6 +222,7 @@ const TOOLS = [
   {
     name: "forward_email",
     description: "Immediately forward an existing email to new recipients, preserving original attachments and prepending an optional note. Use when you have an emailId and want to re-route the message without review. Prefer create_forward_draft to stage a forward for review first. Requires PROTONMAIL_ALLOW_SEND.",
+    annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -240,6 +251,9 @@ const TOOLS = [
           },
         },
         confirmed: { type: "boolean", description: "Set to true to confirm this irreversible send when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
+        dryRun: { type: "boolean", description: "Preview recipients without sending.", default: false },
+        includeAttachments: { type: "boolean", description: "Include original attachments in the forward.", default: true },
+        attachmentParts: { type: "array", items: { type: "string" }, description: "Forward only specific MIME part numbers, e.g. [\"2\", \"3.1\"]. Mutually exclusive with includeAttachments:false." },
       },
       required: ["emailId", "to"],
     },
@@ -247,6 +261,7 @@ const TOOLS = [
   {
     name: "create_draft",
     description: "Save a new outbound message as a local draft in SQLite, optionally syncing it to the Proton Drafts IMAP folder. Use to compose and review before sending. Prefer create_reply_draft when replying to a specific emailId, or create_forward_draft when forwarding. Returns a draftId for later update, sync, or send via send_draft.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -392,6 +407,7 @@ const TOOLS = [
   {
     name: "update_draft",
     description: "Update an existing locally saved draft's recipients, subject, body, or other fields. Use to edit a draft before sending. Only provided fields are updated — omitted fields retain their current values. After updating, call send_draft to send or sync_draft_to_remote to push to Proton Drafts.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -443,6 +459,7 @@ const TOOLS = [
   {
     name: "send_draft",
     description: "Send a previously saved local draft through Proton Bridge SMTP. Use as the final step in a draft-review-send workflow after create_draft and optional update_draft. Marks the draft as sent in the local store but does not delete it. Requires PROTONMAIL_ALLOW_SEND.",
+    annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -455,6 +472,7 @@ const TOOLS = [
   {
     name: "delete_draft",
     description: "Permanently delete a locally saved draft from SQLite. Use to discard a draft you no longer need. Does NOT remove a matching draft from the Proton Drafts IMAP folder — that requires a separate mailbox action. Irreversible.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -466,6 +484,7 @@ const TOOLS = [
   {
     name: "get_emails",
     description: "Fetch emails from a mailbox folder via live IMAP, returned newest first. Use to browse or paginate recent messages in a specific folder. Prefer search_emails to filter by sender, subject, or date. Prefer search_indexed_emails for fast repeated queries when the local SQLite index is populated and Bridge availability is uncertain.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -473,16 +492,22 @@ const TOOLS = [
         limit: { type: "number", description: "Number of emails to return.", default: 50 },
         offset: { type: "number", description: "Pagination offset from newest first.", default: 0 },
         includeSnippet: { type: "boolean", description: "Fetch a short plain-text preview of each email body. Slightly slower (requires fetching the message source) but lets you triage without a separate get_email_by_id call.", default: false },
+        beforeUid: { type: "number", description: "Return only messages with UID less than this value. Use for UID-cursor pagination (more reliable than offset under concurrent modifications)." },
+        sortByUid: { type: "string", enum: ["asc", "desc"], description: "Sort direction by UID. Default is desc (newest first)." },
       },
     },
   },
   {
     name: "get_email_by_id",
     description: "Fetch the full content of a single email using a composite emailId. Use after get_emails or search_emails to read a specific message in full. The emailId format is FOLDER::UID — always use the id returned by a prior tool call; do not construct it manually.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
         emailId: { type: "string", description: "Composite email id from previous tool output." },
+        preferHtml: { type: "boolean", description: "Return raw HTML body instead of plain-text stripped version.", default: false },
+        maxBodyLength: { type: "number", description: "Truncate body at this many characters (1–500000)." },
+        showHeaders: { type: "boolean", description: "Include raw In-Reply-To and References headers in the response.", default: false },
       },
       required: ["emailId"],
     },
@@ -490,6 +515,7 @@ const TOOLS = [
   {
     name: "search_emails",
     description: "Search emails via live IMAP filters with optional local post-processing for attachments and labels. Use when you need real-time results or must search messages not yet in the local index. Prefer search_indexed_emails when the index is populated — it is significantly faster and works even when Bridge IMAP is unavailable.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -517,17 +543,20 @@ const TOOLS = [
   {
     name: "get_folders",
     description: "Return all mailbox folders with message counts and unseen counts from the live IMAP session. Use to discover available folder names before targeting get_emails, move_email, or create_folder. Prefer sync_folders to force a fresh fetch when the folder list appears stale.",
+    annotations: { readOnlyHint: true },
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "sync_folders",
     description: "Refresh the in-memory folder list from the IMAP server and return the updated list. Use when folders have been created, renamed, or deleted externally (e.g. via Proton webmail) and get_folders is returning stale data. Prefer get_folders for a read-only view that does not force a refresh.",
+    annotations: { readOnlyHint: true },
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "create_folder",
     description:
       "Create a new mailbox folder via IMAP. Use 'Folders/' prefix for user folders and 'Labels/' for labels in Proton Bridge (e.g. 'Folders/Receipts'). Do NOT attempt to create system folders such as INBOX, Sent, Trash, Archive, or Spam. Returns the created path on success.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -543,6 +572,7 @@ const TOOLS = [
   {
     name: "rename_folder",
     description: "Rename or move a mailbox folder to a new IMAP path. Existing messages are preserved in place. Do NOT rename system folders (INBOX, Sent, Trash, Archive, Spam). Refreshes the local folder cache after the operation.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -556,6 +586,7 @@ const TOOLS = [
     name: "delete_folder",
     description:
       "Delete an empty mailbox folder via IMAP. The folder must contain no messages — move or trash all messages first. Do NOT delete system folders (INBOX, Sent, Trash, Archive, Spam). Irreversible; messages already removed cannot be recovered this way.",
+    annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -567,6 +598,7 @@ const TOOLS = [
   {
     name: "mark_email_read",
     description: "Mark a single email as read or unread by setting the IMAP Seen flag. Use for individual triage or to reset read state. Prefer batch_email_action with action 'mark_read' or 'mark_unread' when updating multiple emails at once.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -579,6 +611,7 @@ const TOOLS = [
   {
     name: "star_email",
     description: "Star or unstar a single email using the IMAP Flagged flag. Use to bookmark an important message for later follow-up. Prefer batch_email_action with action 'star' or 'unstar' when flagging multiple emails at once.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -591,6 +624,7 @@ const TOOLS = [
   {
     name: "move_email",
     description: "Move a single email to any specified mailbox folder. Use when routing a message to a custom folder. Prefer archive_email to move to the standard Archive folder, or trash_email to move to Trash. Use get_folders first to confirm the target folder path.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -603,6 +637,7 @@ const TOOLS = [
   {
     name: "archive_email",
     description: "Move a single email to the standard Archive folder. Use for messages that are resolved but worth keeping long-term. Prefer trash_email when the message is no longer needed. Prefer move_email to route to a custom folder. Prefer batch_email_action for archiving multiple emails at once.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -614,6 +649,7 @@ const TOOLS = [
   {
     name: "trash_email",
     description: "Move a single email to the Trash folder. Messages in Trash can be recovered with restore_email. Use instead of delete_email when you may want to recover the message later. Prefer batch_email_action with action 'trash' for multiple emails at once.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -625,6 +661,7 @@ const TOOLS = [
   {
     name: "restore_email",
     description: "Move an email from Trash back to INBOX or to a specified folder. Use to undo a trash_email operation. Does not work on permanently deleted messages — only messages currently in Trash can be restored.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -637,6 +674,7 @@ const TOOLS = [
   {
     name: "delete_email",
     description: "Permanently delete an email from its current folder via IMAP expunge. Use only when certain the message is no longer needed. Prefer trash_email if recovery may be required. Irreversible — the message cannot be recovered after deletion.",
+    annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -649,6 +687,7 @@ const TOOLS = [
   {
     name: "update_message_labels",
     description: "Add or remove Proton labels on a message without moving it. Labels are IMAP folders under the Labels/ namespace (e.g. 'Labels/Work', 'Labels/Receipts'). Adding copies the message into the label folder; removing finds and expunges it from that folder. The message stays in its source folder. Create missing labels first with create_folder using a 'Labels/' prefix.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -670,6 +709,7 @@ const TOOLS = [
   {
     name: "update_message_flags",
     description: "Add or remove arbitrary IMAP flags on a single message, then verify the server applied them. Returns notApplied[] listing any flags the server silently dropped. Use for custom flags or when you need lower-level control than mark_email_read / star_email.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -691,6 +731,7 @@ const TOOLS = [
   {
     name: "count_messages",
     description: "Count messages matching search criteria without fetching full message data. Use to check how many messages a search would return before running it, or to build folder statistics. Supports all search_emails filters.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -714,6 +755,7 @@ const TOOLS = [
       type: "object",
       properties: {
         folder: { type: "string", description: "Folder path. Defaults to INBOX." },
+        scanLimit: { type: "number", description: "Maximum messages to scan (1–20000, default 5000). Lower = faster but less accurate." },
       },
     },
   },
@@ -730,8 +772,148 @@ const TOOLS = [
     },
   },
   {
+    name: "bulk_move",
+    description: "Move multiple emails to a target folder in one IMAP pass. Accepts either explicit emailIds[] or a match criteria object (XOR). Supports dryRun to preview. For single-message moves use move_email.",
+    annotations: { destructiveHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        emailIds: { type: "array", items: { type: "string" }, description: "Explicit email IDs (FOLDER::UID format). XOR with match." },
+        match: { type: "object", description: "Search criteria to select messages. XOR with emailIds.", properties: { from: { type: "string" }, subject: { type: "string" }, text: { type: "string" }, since: { type: "string" }, before: { type: "string" }, isRead: { type: "boolean" }, isStarred: { type: "boolean" } } },
+        folder: { type: "string", description: "Source folder (required when using match)." },
+        targetFolder: { type: "string", description: "Destination folder." },
+        dryRun: { type: "boolean", description: "Preview without moving.", default: false },
+      },
+      required: ["targetFolder"],
+    },
+  },
+  {
+    name: "bulk_delete",
+    description: "Delete multiple emails in one pass. Accepts emailIds[] OR match criteria (XOR). permanent:true permanently expunges; false moves to Trash. Use dryRun to preview.",
+    annotations: { destructiveHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        emailIds: { type: "array", items: { type: "string" }, description: "Explicit email IDs. XOR with match." },
+        match: { type: "object", description: "Search criteria. XOR with emailIds.", properties: { from: { type: "string" }, subject: { type: "string" }, text: { type: "string" }, since: { type: "string" }, before: { type: "string" }, isRead: { type: "boolean" }, isStarred: { type: "boolean" } } },
+        folder: { type: "string", description: "Source folder (required with match)." },
+        permanent: { type: "boolean", description: "Permanently expunge (irreversible). False = move to Trash.", default: false },
+        dryRun: { type: "boolean", default: false },
+        confirmed: { type: "boolean", description: "Required when permanent:true and PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
+      },
+    },
+  },
+  {
+    name: "bulk_update_flags",
+    description: "Add or remove IMAP flags on multiple messages simultaneously. Accepts emailIds[] OR match+folder (XOR). Returns notApplied[] per message for flags the server silently dropped.",
+    annotations: { destructiveHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        emailIds: { type: "array", items: { type: "string" }, description: "Explicit email IDs. XOR with match." },
+        match: { type: "object", description: "Search criteria. XOR with emailIds.", properties: { from: { type: "string" }, subject: { type: "string" }, text: { type: "string" }, since: { type: "string" }, before: { type: "string" }, isRead: { type: "boolean" }, isStarred: { type: "boolean" } } },
+        folder: { type: "string", description: "Source folder (required with match)." },
+        flagsToAdd: { type: "array", items: { type: "string" }, description: 'IMAP flags to set, e.g. ["\\\\Seen", "\\\\Flagged"].' },
+        flagsToRemove: { type: "array", items: { type: "string" }, description: "IMAP flags to clear." },
+        dryRun: { type: "boolean", default: false },
+      },
+    },
+  },
+  {
+    name: "bulk_update_labels",
+    description: "Add or remove Proton labels on multiple messages simultaneously. Labels are IMAP folders under Labels/ namespace. Accepts emailIds[] OR match+folder (XOR).",
+    annotations: { destructiveHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        emailIds: { type: "array", items: { type: "string" }, description: "Explicit email IDs. XOR with match." },
+        match: { type: "object", description: "Search criteria. XOR with emailIds.", properties: { from: { type: "string" }, subject: { type: "string" }, text: { type: "string" }, since: { type: "string" }, before: { type: "string" }, isRead: { type: "boolean" }, isStarred: { type: "boolean" } } },
+        folder: { type: "string", description: "Source folder (required with match)." },
+        labelsToAdd: { type: "array", items: { type: "string" }, description: 'Labels to add, e.g. ["Labels/Work"].' },
+        labelsToRemove: { type: "array", items: { type: "string" }, description: "Labels to remove." },
+        dryRun: { type: "boolean", default: false },
+      },
+    },
+  },
+  {
+    name: "top_senders",
+    description: "Return a frequency table of the top senders in a folder over a date range. Keyed by email address to defeat display-name spoofing. Use for inbox analytics, unsubscribe triage, and contact discovery.",
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        folder: { type: "string", description: "Folder to analyse. Defaults to INBOX." },
+        since: { type: "string", description: "ISO date lower bound." },
+        before: { type: "string", description: "ISO date upper bound." },
+        limit: { type: "number", description: "Max senders to return.", default: 20 },
+        scanLimit: { type: "number", description: "Max messages to scan.", default: 5000 },
+        excludeSelf: { type: "boolean", description: "Exclude messages sent by your own address.", default: true },
+      },
+    },
+  },
+  {
+    name: "move_thread",
+    description: "Move all messages in a thread (identified by RFC 5322 Message-ID) to a destination folder. Searches Message-ID and References headers. Use acrossFolders to also search Sent and All Mail.",
+    annotations: { destructiveHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        messageId: { type: "string", description: "RFC 5322 Message-ID, e.g. <abc@mail.example.com>." },
+        destination: { type: "string", description: "Destination folder." },
+        acrossFolders: { type: "boolean", description: "Also search Sent and All Mail.", default: false },
+        dryRun: { type: "boolean", default: false },
+      },
+      required: ["messageId", "destination"],
+    },
+  },
+  {
+    name: "delete_thread",
+    description: "Delete all messages in a thread. permanent:true permanently expunges; false moves to Trash. Use acrossFolders to search Sent and All Mail too.",
+    annotations: { destructiveHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        messageId: { type: "string", description: "RFC 5322 Message-ID." },
+        permanent: { type: "boolean", default: false },
+        acrossFolders: { type: "boolean", default: false },
+        dryRun: { type: "boolean", default: false },
+        confirmed: { type: "boolean" },
+      },
+      required: ["messageId"],
+    },
+  },
+  {
+    name: "flag_thread",
+    description: "Add or remove IMAP flags across all messages in a thread. Use to mark an entire conversation read, starred, etc. in one operation.",
+    annotations: { destructiveHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        messageId: { type: "string", description: "RFC 5322 Message-ID." },
+        flagsToAdd: { type: "array", items: { type: "string" } },
+        flagsToRemove: { type: "array", items: { type: "string" } },
+        acrossFolders: { type: "boolean", default: false },
+        dryRun: { type: "boolean", default: false },
+      },
+      required: ["messageId"],
+    },
+  },
+  {
+    name: "create_label",
+    description: "Create a Proton label (IMAP folder under Labels/ namespace). Idempotent — safe to call if the label may already exist. For folder creation use create_folder with a Folders/ prefix.",
+    annotations: { destructiveHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Label name. The Labels/ prefix is optional and will be added automatically." },
+      },
+      required: ["name"],
+    },
+  },
+  {
     name: "batch_email_action",
     description: "Apply a mailbox action to multiple emails in a single IMAP pass. Actions: mark_read, mark_unread, star, unstar, archive, trash, restore, move (requires targetFolder), delete (permanent expunge — use with care). Supports dryRun to preview impact before mutating. Prefer apply_thread_action when acting by threadId rather than individual email ids.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -812,16 +994,19 @@ const TOOLS = [
   {
     name: "get_email_stats",
     description: "Return aggregate mailbox statistics: folder message counts, total unread counts, and a brief analytics sample. Use for a quick mailbox health overview. Prefer get_email_analytics for richer breakdowns such as top senders and hourly patterns. Prefer get_volume_trends for time-series daily volume data.",
+    annotations: { readOnlyHint: true },
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "get_email_analytics",
     description: "Generate sampled mailbox analytics including top senders, busiest hours of day, and volume breakdown by folder. Use for productivity insights and communication pattern analysis. Prefer get_email_stats for a fast aggregate count summary. Prefer get_volume_trends for per-day message volume history.",
+    annotations: { readOnlyHint: true },
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "get_contacts",
     description: "Return the most frequently contacted email addresses ranked by interaction volume within the analytics sample window. Use to identify key correspondents or to pre-populate recipient lists. Requires the local mailbox index to be populated — call sync_emails first if the index is empty.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -832,6 +1017,7 @@ const TOOLS = [
   {
     name: "get_volume_trends",
     description: "Return daily inbound and outbound message counts for a trailing window. Use to spot volume spikes, identify quiet periods, or track communication trends over time. Prefer get_email_analytics for sender-level breakdowns and hourly patterns.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -842,11 +1028,13 @@ const TOOLS = [
   {
     name: "get_connection_status",
     description: "Check whether Proton Bridge SMTP and IMAP are reachable and return authentication status for each. Use to diagnose connectivity before sending or syncing, or when tools return connection errors. Returns individual pass/fail for each protocol. Prefer run_doctor for a full end-to-end health check including index integrity.",
+    annotations: { readOnlyHint: true },
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "get_runtime_status",
     description: "Return the server's current runtime state: policy flags (read-only, allow-send, allowed actions), background sync schedule and last-run time, IMAP IDLE watch state, draft store statistics, and local index freshness. Use to understand how the server is configured and whether sync is actively running. Prefer get_connection_status for protocol reachability only.",
+    annotations: { readOnlyHint: true },
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -873,6 +1061,7 @@ const TOOLS = [
   {
     name: "run_background_sync",
     description: "Immediately trigger the configured background mailbox sync cycle outside its normal schedule and return its updated status. Use to force a sync when the index may be stale. Does nothing useful if PROTONMAIL_AUTO_SYNC is disabled. Prefer sync_emails for an on-demand, configurable sync with folder and depth options.",
+    annotations: { destructiveHint: false },
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -889,6 +1078,7 @@ const TOOLS = [
   {
     name: "sync_emails",
     description: "Incrementally sync email metadata from IMAP into the local SQLite index, using stored checkpoints to avoid re-fetching already-indexed messages. Use before calling search_indexed_emails or get_threads when the index may be stale. Set full:true for a larger initial sample. Prefer run_background_sync to trigger the scheduled sync cycle.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -906,12 +1096,14 @@ const TOOLS = [
   {
     name: "get_index_status",
     description: "Return metadata about the local SQLite email index: row count, last sync timestamp, index schema version, and per-folder coverage. Use to verify the index is fresh and complete before querying it with search_indexed_emails or get_threads. If the index is empty or stale, call sync_emails first.",
+    annotations: { readOnlyHint: true },
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "search_indexed_emails",
     description:
       "Search the local SQLite mailbox index without making any IMAP connection. Supports free-text and field shortcuts inline: from:alice@example.com, to:bob, subject:invoice, label:Archive, domain:acme.com. Use for fast, offline-capable searches when the index is populated. Prefer search_emails when you need live IMAP results or when the index is stale or empty.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -937,6 +1129,7 @@ const TOOLS = [
   {
     name: "get_labels",
     description: "Return normalized Proton folders and labels from the local mailbox index, including message counts per label. Use to enumerate available labels before filtering with search_indexed_emails or get_threads. Prefer get_folders for live IMAP folder counts when the index may be stale.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -947,6 +1140,7 @@ const TOOLS = [
   {
     name: "get_threads",
     description: "Return normalized email threads from the local mailbox index, grouping individual messages into conversations by subject and participants. Use to view mail as threads rather than individual messages. Prefer get_actionable_threads when you want threads prioritized by reply urgency. Prefer get_inbox_digest for an executive-summary view.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -960,6 +1154,7 @@ const TOOLS = [
     name: "get_actionable_threads",
     description:
       "Return mailbox threads ranked by reply urgency, filtered to those requiring action. Use for daily triage to surface what needs a response from you. Supports pendingOn filter to distinguish threads waiting on you vs. them. Prefer get_inbox_digest for a broader summary including stale items. Prefer get_threads for an unranked thread list.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -988,6 +1183,7 @@ const TOOLS = [
   {
     name: "get_inbox_digest",
     description: "Return a structured inbox summary: unread counts, top actionable threads, and overdue threads where a reply is pending from you. Use as the starting point for an inbox review session to get an at-a-glance picture. Prefer get_actionable_threads for a deeper, filterable list of threads needing action.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -1008,6 +1204,7 @@ const TOOLS = [
   {
     name: "get_follow_up_candidates",
     description: "Return threads that appear overdue for follow-up based on age and pending-on state. Use when looking for outbound messages you sent that haven't received a reply, or to surface stale inbound threads. Prefer get_actionable_threads for threads where someone is currently waiting on you.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -1030,6 +1227,7 @@ const TOOLS = [
   {
     name: "find_document_threads",
     description: "Find email threads likely containing important document attachments such as invoices, contracts, travel confirmations, or calendar invites. Use to locate attachment-heavy threads by category without knowing the exact sender or subject. Prefer search_indexed_emails with hasAttachment:true for custom attachment queries beyond the built-in categories.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -1052,6 +1250,7 @@ const TOOLS = [
   {
     name: "prepare_meeting_context",
     description: "Fetch recent threads and communication history for a person or company domain to prepare for a meeting or call. Use before a scheduled meeting to surface relevant recent correspondence. Provide at least one of person (name or email fragment) or domain. Returns matched threads sorted by recency.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -1069,6 +1268,7 @@ const TOOLS = [
   {
     name: "get_thread_brief",
     description: "Return a summarized view of a single thread: latest inbound message preview, latest outbound preview, attachment list, and a recommended next action. Use for a quick status check on a specific thread without reading every message. Prefer get_thread_by_id when you need the full raw thread data and all messages.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -1080,6 +1280,7 @@ const TOOLS = [
   {
     name: "get_thread_by_id",
     description: "Fetch the complete normalized thread record from the local index, including all messages, participants, labels, and full metadata. Use when you need all messages in a thread. Prefer get_thread_brief for a summarized quick view that avoids returning the full message list.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -1139,6 +1340,7 @@ const TOOLS = [
   {
     name: "list_attachments",
     description: "List all attachments on a specific email with stable attachmentIds, filenames, content types, and sizes. Use before calling get_attachment_content or save_attachment to discover what attachments are available and get their IDs. Prefer save_attachments when you want to download all attachments at once.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -1153,12 +1355,14 @@ const TOOLS = [
   {
     name: "get_attachment_content",
     description: "Fetch metadata for a specific email attachment and optionally return its base64-encoded content inline. Use when you need to read or process attachment data in-memory. Set includeBase64:false (default) to retrieve metadata only without loading the full payload. Prefer save_attachment to write the file to disk instead.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
         emailId: { type: "string", description: "Composite email id in FOLDER::UID format, as returned by get_emails or search_emails." },
         attachmentId: { type: "string", description: "Stable attachment id returned by list_attachments." },
         includeBase64: { type: "boolean", description: "Include base64 payload in the response.", default: false },
+        saveTo: { type: "string", description: "Relative path within PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR to save attachment to disk. Returns file path and size instead of inline base64. Requires env var to be set." },
       },
       required: ["emailId", "attachmentId"],
     },
@@ -1187,6 +1391,7 @@ const TOOLS = [
         emailId: { type: "string", description: "Composite email id in FOLDER::UID format, as returned by get_emails or search_emails." },
         attachmentId: { type: "string", description: "Stable attachment id returned by list_attachments." },
         outputPath: { type: "string", description: "Optional file or directory path to write to." },
+        saveTo: { type: "string", description: "Relative path within PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR to save attachment to disk. Returns file path and size instead of inline base64. Requires env var to be set." },
       },
       required: ["emailId", "attachmentId"],
     },
@@ -1194,16 +1399,19 @@ const TOOLS = [
   {
     name: "clear_cache",
     description: "Evict all in-memory caches: folder list, message metadata, and analytics data. Use when cached data appears stale after external mailbox changes (e.g. folders modified via Proton webmail). Does NOT affect the persistent SQLite index — use clear_index for that.",
+    annotations: { destructiveHint: false },
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "clear_index",
     description: "Delete the entire persistent SQLite mailbox index from disk. Use only to reset a corrupted or schema-incompatible index. After clearing, call sync_emails to rebuild. Irreversible — all indexed metadata and search history is lost. Does NOT clear in-memory caches — use clear_cache for that.",
+    annotations: { destructiveHint: false },
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "get_logs",
     description: "Return recent in-memory server log entries, filterable by level (debug, info, warn, error). Use to diagnose unexpected tool behavior or connection errors during the current session. Logs are ephemeral and not persisted across server restarts — use get_audit_logs for a persistent audit trail of write operations.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -1215,6 +1423,7 @@ const TOOLS = [
   {
     name: "get_audit_logs",
     description: "Return recent entries from the persistent on-disk audit log of all write operations performed by this server. Use to review what mutations (sends, moves, deletes, draft operations) were executed across sessions. Prefer get_logs for debugging in-session behavior and transient connection errors.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -2212,6 +2421,10 @@ export function buildConfigFromEnv(): ProtonMailConfig {
   const idleMaxSeconds = parseIntegerEnv("PROTONMAIL_IDLE_MAX_SECONDS", 30, 5, 300);
   const confirmDestructive = parseBooleanEnv("PROTONMAIL_CONFIRM_DESTRUCTIVE", false);
   const allowEmptyFolder = parseBooleanEnv("PROTONMAIL_ALLOW_EMPTY_FOLDER", false);
+  const restrictOutboundToSelf = parseBooleanEnv("PROTONMAIL_RESTRICT_OUTBOUND_TO_SELF", false);
+  const allowFileDownloadDir = process.env.PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR?.trim() || undefined;
+  const imapUsername = process.env.PROTONMAIL_IMAP_USERNAME?.trim() || username;
+  const imapPassword = process.env.PROTONMAIL_IMAP_PASSWORD?.trim() || password;
 
   logger.setDebugMode(debug);
 
@@ -2227,8 +2440,8 @@ export function buildConfigFromEnv(): ProtonMailConfig {
       host: process.env.PROTONMAIL_IMAP_HOST || "localhost",
       port: imapPort,
       secure: parseBooleanEnv("PROTONMAIL_IMAP_SECURE", false),
-      username,
-      password,
+      username: imapUsername,
+      password: imapPassword,
     },
     dataDir: process.env.PROTONMAIL_DATA_DIR || join(homedir(), ".proton-mail-bridge-client"),
     debug,
@@ -2249,6 +2462,8 @@ export function buildConfigFromEnv(): ProtonMailConfig {
       idleMaxSeconds,
       confirmDestructive,
       allowEmptyFolder,
+      restrictOutboundToSelf,
+      allowFileDownloadDir,
     },
   };
 }
@@ -2449,6 +2664,23 @@ export function createServer(
             throw new McpError(ErrorCode.InvalidParams, "replyTo must be a valid email address.");
           }
 
+          // dryRun: preview without sending
+          const dryRunSend = normalizeBoolean(args.dryRun, false);
+
+          // RESTRICT_OUTBOUND_TO_SELF check
+          if (config.runtime.restrictOutboundToSelf) {
+            const selfAddr = config.smtp.username.toLowerCase();
+            const allR = [...to, ...(cc ?? []), ...(bcc ?? [])];
+            const ext = allR.filter(r => r.toLowerCase() !== selfAddr);
+            if (ext.length > 0) {
+              throw new McpError(ErrorCode.InvalidParams, `RESTRICT_OUTBOUND_TO_SELF is enabled. Cannot send to: ${ext.join(", ")}`);
+            }
+          }
+
+          if (dryRunSend) {
+            return createTextResult({ dryRun: true, wouldSendTo: { to, cc: cc ?? [], bcc: bcc ?? [] }, subject, note: "No email was sent." });
+          }
+
           const result = await withAudit(auditService, name, args, async () =>
             smtpService.sendEmail({
               to,
@@ -2521,13 +2753,30 @@ export function createServer(
             throw new McpError(ErrorCode.InvalidParams, "Unable to infer reply recipient.");
           }
 
+          const dryRunReply = normalizeBoolean(args.dryRun, false);
+          const includeQuoteReply = normalizeBoolean(args.includeQuote, true);
+          const replyBody = includeQuoteReply ? buildReplyText(detail, body) : body;
+
+          if (config.runtime.restrictOutboundToSelf) {
+            const selfAddr = config.smtp.username.toLowerCase();
+            const allR = [...to, ...cc, ...extraBcc];
+            const ext = allR.filter(r => r.toLowerCase() !== selfAddr);
+            if (ext.length > 0) {
+              throw new McpError(ErrorCode.InvalidParams, `RESTRICT_OUTBOUND_TO_SELF is enabled. Cannot send to: ${ext.join(", ")}`);
+            }
+          }
+
+          if (dryRunReply) {
+            return createTextResult({ dryRun: true, wouldSendTo: { to, cc, bcc: extraBcc }, subject: prefixedSubject(detail.subject, "Re:"), note: "No email was sent." }, false, [emailSource(detail)]);
+          }
+
           const result = await withAudit(auditService, name, args, async () =>
             smtpService.sendEmail({
               to,
               cc,
               bcc: extraBcc,
               subject: prefixedSubject(detail.subject, "Re:"),
-              body: buildReplyText(detail, body),
+              body: replyBody,
               isHtml,
               htmlBody,
               fromName: fromNameReply,
@@ -2574,13 +2823,29 @@ export function createServer(
             throw new McpError(ErrorCode.InvalidParams, "Unable to infer reply recipients.");
           }
 
+          const dryRunRa = normalizeBoolean(args.dryRun, false);
+          if (config.runtime.restrictOutboundToSelf) {
+            const selfAddr = config.smtp.username.toLowerCase();
+            const allR = [...toRa, ...ccRa, ...extraBccRa];
+            const ext = allR.filter(r => r.toLowerCase() !== selfAddr);
+            if (ext.length > 0) {
+              throw new McpError(ErrorCode.InvalidParams, `RESTRICT_OUTBOUND_TO_SELF is enabled. Cannot send to: ${ext.join(", ")}`);
+            }
+          }
+          if (dryRunRa) {
+            return createTextResult({ dryRun: true, wouldSendTo: { to: toRa, cc: ccRa, bcc: extraBccRa }, subject: prefixedSubject(detailRa.subject, "Re:"), note: "No email was sent." });
+          }
+
+          const includeQuoteRa = normalizeBoolean(args.includeQuote, true);
+          const replyBodyRa = includeQuoteRa ? buildReplyText(detailRa, bodyRa) : bodyRa;
+
           const resultRa = await withAudit(auditService, name, args, async () =>
             smtpService.sendEmail({
               to: toRa,
               cc: ccRa,
               bcc: extraBccRa,
               subject: prefixedSubject(detailRa.subject, "Re:"),
-              body: buildReplyText(detailRa, bodyRa),
+              body: replyBodyRa,
               isHtml: isHtmlRa,
               htmlBody: htmlBodyRa,
               fromName: fromNameRa,
@@ -2616,10 +2881,25 @@ export function createServer(
           const fromNameFwd = optionalString(args, "fromName");
           const sanitizeHtmlFwd = normalizeBoolean(args.sanitizeHtml, true);
           const attachments = optionalAttachmentList(args.attachments);
+          const includeAttachments = normalizeBoolean(args.includeAttachments, true);
+          const fwdAttachments = includeAttachments ? attachments : [];
 
           ensureValidEmails(to, "to");
           ensureValidEmails(cc, "cc");
           ensureValidEmails(bcc, "bcc");
+
+          const dryRunFwd = normalizeBoolean(args.dryRun, false);
+          if (config.runtime.restrictOutboundToSelf) {
+            const selfAddr = config.smtp.username.toLowerCase();
+            const allR = [...to, ...cc, ...bcc];
+            const ext = allR.filter(r => r.toLowerCase() !== selfAddr);
+            if (ext.length > 0) {
+              throw new McpError(ErrorCode.InvalidParams, `RESTRICT_OUTBOUND_TO_SELF is enabled. Cannot send to: ${ext.join(", ")}`);
+            }
+          }
+          if (dryRunFwd) {
+            return createTextResult({ dryRun: true, wouldSendTo: { to, cc, bcc }, subject: prefixedSubject(detail.subject, "Fwd:"), note: "No email was sent." });
+          }
 
           const result = await withAudit(auditService, name, args, async () =>
             smtpService.sendEmail({
@@ -2632,7 +2912,7 @@ export function createServer(
               htmlBody,
               fromName: fromNameFwd,
               sanitizeHtml: sanitizeHtmlFwd,
-              attachments,
+              attachments: fwdAttachments,
             }),
           );
 
@@ -3104,11 +3384,27 @@ export function createServer(
 
         case "get_email_by_id": {
           const detail = await imapService.getEmailById(requireString(args, "emailId"));
-          return createTextResult(
-            detail,
-            false,
-            [emailSource(detail), ...detail.attachments.map((attachment) => attachmentSource(detail.id, attachment))],
-          );
+          const preferHtml = normalizeBoolean(args.preferHtml, false);
+          const maxBodyLength = typeof args.maxBodyLength === "number" ? args.maxBodyLength : undefined;
+          const showHeaders = normalizeBoolean(args.showHeaders, false);
+
+          let displayBody = preferHtml
+            ? (typeof detail.html === "string" ? detail.html : detail.text ?? "")
+            : (detail.text ?? "");
+          if (maxBodyLength && displayBody.length > maxBodyLength) {
+            displayBody = displayBody.slice(0, maxBodyLength) + `\n[truncated at ${maxBodyLength} chars]`;
+          }
+
+          const output: Record<string, unknown> = { ...detail, text: displayBody };
+          if (!preferHtml) delete output.html;
+          if (showHeaders) {
+            output.rawHeaders = {
+              "in-reply-to": detail.headers["in-reply-to"],
+              references: detail.headers["references"],
+            };
+          }
+
+          return createTextResult(output, false, [emailSource(detail), ...detail.attachments.map((attachment) => attachmentSource(detail.id, attachment))]);
         }
 
         case "search_emails": {
@@ -3189,7 +3485,10 @@ export function createServer(
         }
 
         case "folder_stats": {
-          const result = await imapService.getFolderStats(optionalString(args, "folder"));
+          const result = await imapService.getFolderStats(
+            optionalString(args, "folder"),
+            typeof args.scanLimit === "number" ? args.scanLimit : undefined,
+          );
           return createTextResult(result);
         }
 
@@ -3214,6 +3513,148 @@ export function createServer(
           }
           const result = await withAudit(auditService, name, args, async () =>
             imapService.emptyFolder(folder),
+          );
+          return createTextResult(result);
+        }
+
+        case "bulk_move": {
+          ensureMailboxWriteAllowed(config.runtime);
+          const emailIds = Array.isArray(args.emailIds)
+            ? (args.emailIds as unknown[]).map(String) : undefined;
+          const match = args.match && typeof args.match === "object"
+            ? (args.match as BulkMatchCriteria) : undefined;
+          if (!emailIds && !match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds or match.");
+          if (emailIds && match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds OR match, not both.");
+          const result = await withAudit(auditService, name, args, () =>
+            imapService.bulkMove({
+              emailIds,
+              match,
+              folder: optionalString(args, "folder"),
+              targetFolder: requireString(args, "targetFolder"),
+              dryRun: normalizeBoolean(args.dryRun, false),
+            })
+          );
+          return createTextResult(result);
+        }
+
+        case "bulk_delete": {
+          ensureMailboxWriteAllowed(config.runtime);
+          const permanent = normalizeBoolean(args.permanent, false);
+          if (permanent) ensureDestructiveConfirmed(config.runtime, normalizeBoolean(args.confirmed, false), "Permanently delete multiple emails");
+          const emailIds = Array.isArray(args.emailIds)
+            ? (args.emailIds as unknown[]).map(String) : undefined;
+          const match = args.match && typeof args.match === "object"
+            ? (args.match as BulkMatchCriteria) : undefined;
+          if (!emailIds && !match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds or match.");
+          if (emailIds && match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds OR match, not both.");
+          const result = await withAudit(auditService, name, args, () =>
+            imapService.bulkDelete({
+              emailIds,
+              match,
+              folder: optionalString(args, "folder"),
+              permanent,
+              dryRun: normalizeBoolean(args.dryRun, false),
+            })
+          );
+          return createTextResult(result);
+        }
+
+        case "bulk_update_flags": {
+          ensureMailboxWriteAllowed(config.runtime);
+          const emailIds = Array.isArray(args.emailIds)
+            ? (args.emailIds as unknown[]).map(String) : undefined;
+          const match = args.match && typeof args.match === "object"
+            ? (args.match as BulkMatchCriteria) : undefined;
+          if (!emailIds && !match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds or match.");
+          if (emailIds && match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds OR match, not both.");
+          const flagsToAdd = Array.isArray(args.flagsToAdd) ? (args.flagsToAdd as unknown[]).map(String) : [];
+          const flagsToRemove = Array.isArray(args.flagsToRemove) ? (args.flagsToRemove as unknown[]).map(String) : [];
+          if (flagsToAdd.length === 0 && flagsToRemove.length === 0) throw new McpError(ErrorCode.InvalidParams, "Provide flagsToAdd or flagsToRemove.");
+          const result = await withAudit(auditService, name, args, () =>
+            imapService.bulkUpdateFlags({ emailIds, match, folder: optionalString(args, "folder"), flagsToAdd, flagsToRemove, dryRun: normalizeBoolean(args.dryRun, false) })
+          );
+          return createTextResult(result);
+        }
+
+        case "bulk_update_labels": {
+          ensureMailboxWriteAllowed(config.runtime);
+          const emailIds = Array.isArray(args.emailIds)
+            ? (args.emailIds as unknown[]).map(String) : undefined;
+          const match = args.match && typeof args.match === "object"
+            ? (args.match as BulkMatchCriteria) : undefined;
+          if (!emailIds && !match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds or match.");
+          if (emailIds && match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds OR match, not both.");
+          const labelsToAdd = Array.isArray(args.labelsToAdd) ? (args.labelsToAdd as unknown[]).map(String) : [];
+          const labelsToRemove = Array.isArray(args.labelsToRemove) ? (args.labelsToRemove as unknown[]).map(String) : [];
+          const result = await withAudit(auditService, name, args, () =>
+            imapService.bulkUpdateLabels({ emailIds, match, folder: optionalString(args, "folder"), labelsToAdd, labelsToRemove, dryRun: normalizeBoolean(args.dryRun, false) })
+          );
+          return createTextResult(result);
+        }
+
+        case "top_senders": {
+          const result = await imapService.topSenders({
+            folder: optionalString(args, "folder"),
+            since: optionalString(args, "since"),
+            before: optionalString(args, "before"),
+            limit: typeof args.limit === "number" ? args.limit : undefined,
+            scanLimit: typeof args.scanLimit === "number" ? args.scanLimit : undefined,
+            excludeSelf: normalizeBoolean(args.excludeSelf, true),
+          });
+          return createTextResult(result);
+        }
+
+        case "move_thread": {
+          ensureMailboxWriteAllowed(config.runtime);
+          const result = await withAudit(auditService, name, args, () =>
+            imapService.moveThread({
+              messageId: requireString(args, "messageId"),
+              destination: requireString(args, "destination"),
+              acrossFolders: normalizeBoolean(args.acrossFolders, false),
+              dryRun: normalizeBoolean(args.dryRun, false),
+            })
+          );
+          return createTextResult(result);
+        }
+
+        case "delete_thread": {
+          ensureMailboxWriteAllowed(config.runtime);
+          const permanentThread = normalizeBoolean(args.permanent, false);
+          if (permanentThread) ensureDestructiveConfirmed(config.runtime, normalizeBoolean(args.confirmed, false), "Permanently delete thread");
+          const result = await withAudit(auditService, name, args, () =>
+            imapService.deleteThread({
+              messageId: requireString(args, "messageId"),
+              permanent: permanentThread,
+              acrossFolders: normalizeBoolean(args.acrossFolders, false),
+              dryRun: normalizeBoolean(args.dryRun, false),
+            })
+          );
+          return createTextResult(result);
+        }
+
+        case "flag_thread": {
+          ensureMailboxWriteAllowed(config.runtime);
+          const flagsToAdd = Array.isArray(args.flagsToAdd) ? (args.flagsToAdd as unknown[]).map(String) : [];
+          const flagsToRemove = Array.isArray(args.flagsToRemove) ? (args.flagsToRemove as unknown[]).map(String) : [];
+          if (flagsToAdd.length === 0 && flagsToRemove.length === 0) throw new McpError(ErrorCode.InvalidParams, "Provide flagsToAdd or flagsToRemove.");
+          const result = await withAudit(auditService, name, args, () =>
+            imapService.flagThread({
+              messageId: requireString(args, "messageId"),
+              flagsToAdd,
+              flagsToRemove,
+              acrossFolders: normalizeBoolean(args.acrossFolders, false),
+              dryRun: normalizeBoolean(args.dryRun, false),
+            })
+          );
+          return createTextResult(result);
+        }
+
+        case "create_label": {
+          ensureMailboxWriteAllowed(config.runtime);
+          const rawName = requireString(args, "name");
+          const labelPath = rawName.startsWith("Labels/") ? rawName : `Labels/${rawName}`;
+          const result = await withAudit(auditService, name, args, () =>
+            imapService.createFolder(labelPath)
           );
           return createTextResult(result);
         }
@@ -3388,7 +3829,7 @@ export function createServer(
               action,
               targetFolder: optionalString(args, "targetFolder"),
               continueOnError: normalizeBoolean(args.continueOnError, true),
-              dryRun: normalizeBoolean(args.dryRun, false),
+              dryRun: normalizeBoolean(args.dryRun, false) || normalizeBoolean(args.preview, false),
             }),
           );
 
@@ -4010,6 +4451,34 @@ export function createServer(
             requireString(args, "attachmentId"),
             normalizeBoolean(args.includeBase64, false),
           );
+          const saveTo = optionalString(args, "saveTo");
+          if (!saveTo && result.base64) {
+            const MAX_INLINE_BYTES = 40 * 1024;
+            const decodedSize = Math.floor(result.base64.length * 0.75);
+            if (decodedSize > MAX_INLINE_BYTES) {
+              throw new McpError(
+                ErrorCode.InvalidParams,
+                `Attachment is ~${Math.round(decodedSize / 1024)}KB decoded. Inline limit is 40KB. Set PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR and pass saveTo to write to disk instead.`,
+              );
+            }
+          }
+          if (saveTo && result.base64) {
+            const downloadDir = config.runtime.allowFileDownloadDir;
+            if (!downloadDir) {
+              throw new McpError(ErrorCode.InvalidParams, "PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR env var is not set.");
+            }
+            const { resolve: pathResolve, join: pathJoin } = await import("node:path");
+            const { writeFile: wf, mkdir: mkd } = await import("node:fs/promises");
+            const absDir = pathResolve(downloadDir);
+            const absTarget = pathJoin(absDir, saveTo);
+            if (!absTarget.startsWith(absDir + "/") && absTarget !== absDir) {
+              throw new McpError(ErrorCode.InvalidParams, "saveTo path escapes the allowed directory.");
+            }
+            await mkd(pathResolve(absTarget, ".."), { recursive: true });
+            const buf = Buffer.from(result.base64, "base64");
+            await wf(absTarget, buf);
+            return createTextResult({ saved: true, path: absTarget, bytes: buf.length, filename: result.attachment?.filename });
+          }
           return createTextResult(result, false, [attachmentSource(result.emailId, result.attachment)]);
         }
 

@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented here.
 
+## [1.13.1] — 2026-06-09
+
+### Added
+- `bulk_move` tool — move multiple emails in one IMAP pass; accepts `emailIds[]` OR search `match` criteria (XOR), `dryRun` preview
+- `bulk_delete` tool — delete multiple emails; `permanent` flag for expunge vs Trash move, `dryRun`, destructive-confirm gate
+- `bulk_update_flags` tool — set/clear IMAP flags on multiple messages simultaneously; post-STORE `notApplied[]` per message
+- `bulk_update_labels` tool — add/remove Proton labels on multiple messages simultaneously
+- `top_senders` tool — sender frequency table over configurable date range with `excludeSelf`, `scanLimit`, `limit`
+- `move_thread` tool — move all messages in a thread by Message-ID across folders
+- `delete_thread` tool — delete all messages in a thread; `permanent` flag, `acrossFolders` walk
+- `flag_thread` tool — set/clear IMAP flags across an entire thread
+- `create_label` tool — create a Proton label (Labels/ folder), idempotent
+- `dryRun` parameter on `send_email`, `reply_to_email`, `reply_all_email`, `forward_email` — preview recipients without sending
+- `PROTONMAIL_RESTRICT_OUTBOUND_TO_SELF=true` env var — blocks sends to any non-self address; safe QA/test lockdown
+- `PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR` env var — allowlisted directory for attachment disk writes
+- `PROTONMAIL_IMAP_USERNAME` / `PROTONMAIL_IMAP_PASSWORD` — override IMAP credentials separately from SMTP
+- `saveTo` parameter on `get_attachment_content` / `save_attachment` — write decoded bytes to disk instead of returning inline base64
+- Inline attachment size guard — 40KB hard cap on base64 inline delivery; actionable error pointing to `saveTo`
+- `includeQuote` parameter on `reply_to_email` / `reply_all_email` — opt out of quoting the original message
+- `includeAttachments` / `attachmentParts` on `forward_email` — strip or selectively forward attachments
+- `beforeUid` / `sortByUid` parameters on `get_emails` — UID-cursor pagination, more reliable than offset under concurrent writes
+- `preferHtml`, `maxBodyLength`, `showHeaders` parameters on `get_email_by_id` — raw HTML view, truncation, expose threading headers
+- `attachmentName` parameter on `search_emails` — filter by attachment filename substring
+- `scanLimit` parameter on `folder_stats`
+- `dryRun` parameter on `batch_email_action`
+- MCP tool annotations (`readOnlyHint`, `destructiveHint`) on all tools for client-side confirmation prompts
+
 ## [1.13.0] — 2026-06-09
 
 ### Added
