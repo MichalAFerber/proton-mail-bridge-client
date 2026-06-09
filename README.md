@@ -12,7 +12,7 @@
 [![npm version](https://img.shields.io/npm/v/proton-mail-bridge-client?color=%236d4aff&label=npm)](https://www.npmjs.com/package/proton-mail-bridge-client)
 [![CI](https://github.com/googlarz/proton-mail-bridge-client/actions/workflows/ci.yml/badge.svg)](https://github.com/googlarz/proton-mail-bridge-client/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Node.js 20+](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
+[![Node.js 18+](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![MCP](https://img.shields.io/badge/MCP-compatible-blueviolet)](https://modelcontextprotocol.io)
 [![GitHub stars](https://img.shields.io/github/stars/googlarz/proton-mail-bridge-client?style=social)](https://github.com/googlarz/proton-mail-bridge-client)
@@ -485,25 +485,25 @@ PROTONMAIL_IDLE_MAX_SECONDS='30'
 ## Tool surface
 
 ### Send
-`send_email` · `send_test_email` · `reply_to_email` · `forward_email`
+`send_email` · `send_test_email` · `reply_to_email` · `reply_all_email` · `forward_email`
 
 ### Drafts
 `create_draft` · `create_reply_draft` · `create_forward_draft` · `create_thread_reply_draft` · `list_drafts` · `list_remote_drafts` · `get_draft` · `update_draft` · `sync_draft_to_remote` · `send_draft` · `delete_draft`
 
 ### Read
-`get_emails` · `get_email_by_id` · `search_emails` · `search_indexed_emails` · `list_attachments` · `get_attachment_content` · `save_attachment` · `save_attachments`
+`get_emails` · `get_email_by_id` · `count_messages` · `search_emails` · `search_indexed_emails` · `list_attachments` · `get_attachment_content` · `save_attachment` · `save_attachments`
 
 ### Triage
-`get_folders` · `sync_folders` · `get_labels` · `get_threads` · `get_thread_by_id` · `get_thread_brief` · `get_actionable_threads` · `get_inbox_digest` · `get_follow_up_candidates` · `find_document_threads` · `prepare_meeting_context`
+`get_folders` · `sync_folders` · `get_labels` · `get_threads` · `get_thread_by_id` · `get_thread_brief` · `get_actionable_threads` · `get_inbox_digest` · `get_follow_up_candidates` · `find_document_threads` · `prepare_meeting_context` · `delete_thread` · `flag_thread` · `move_thread`
 
 ### Actions
-`mark_email_read` · `star_email` · `move_email` · `archive_email` · `trash_email` · `restore_email` · `delete_email` · `batch_email_action` · `apply_thread_action` · `empty_folder`
+`mark_email_read` · `star_email` · `move_email` · `archive_email` · `trash_email` · `restore_email` · `delete_email` · `batch_email_action` · `apply_thread_action` · `empty_folder` · `bulk_delete` · `bulk_move` · `bulk_update_flags` · `bulk_update_labels` · `update_message_flags` · `update_message_labels`
 
 ### Folder management
-`create_folder` · `rename_folder` · `delete_folder`
+`create_folder` · `rename_folder` · `delete_folder` · `create_label`
 
 ### Analytics
-`get_email_stats` · `get_email_analytics` · `get_contacts` · `get_volume_trends` · `folder_stats`
+`get_email_stats` · `get_email_analytics` · `get_contacts` · `get_volume_trends` · `folder_stats` · `top_senders`
 
 ### Diagnostics
 `get_connection_status` · `get_runtime_status` · `run_doctor` · `get_audit_logs` · `run_background_sync` · `wait_for_mailbox_changes` · `sync_emails` · `get_index_status` · `clear_cache` · `clear_index` · `get_logs`
