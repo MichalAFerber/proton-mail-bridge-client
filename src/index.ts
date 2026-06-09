@@ -105,6 +105,8 @@ const TOOLS = [
           enum: ["high", "normal", "low"],
           description: "SMTP priority header.",
         },
+        fromName: { type: "string", description: "Optional display name for the From header (e.g. 'Alice'). Does not change the sending address." },
+        sanitizeHtml: { type: "boolean", description: "Strip scripts, event handlers, and remote image beacons from HTML before delivery. Defaults to true when body is HTML.", default: true },
         replyTo: { type: "string", description: "Optional reply-to email address." },
         attachments: {
           type: "array",
@@ -151,6 +153,8 @@ const TOOLS = [
         isHtml: { type: "boolean", description: "Send body as HTML (ignored when markdownBody is provided).", default: false },
         cc: { type: "string", description: "Additional CC recipients, comma-separated." },
         bcc: { type: "string", description: "Additional BCC recipients, comma-separated." },
+        fromName: { type: "string", description: "Optional display name for the From header." },
+        sanitizeHtml: { type: "boolean", description: "Strip scripts and remote image beacons from HTML before delivery. Defaults to true.", default: true },
         attachments: {
           type: "array",
           description: "Attachments with base64 encoded content.",
@@ -183,6 +187,8 @@ const TOOLS = [
         isHtml: { type: "boolean", description: "Send body as HTML (ignored when markdownBody is provided).", default: false },
         cc: { type: "string", description: "Additional CC recipients, comma-separated." },
         bcc: { type: "string", description: "Additional BCC recipients, comma-separated." },
+        fromName: { type: "string", description: "Optional display name for the From header." },
+        sanitizeHtml: { type: "boolean", description: "Strip scripts and remote image beacons from HTML before delivery. Defaults to true.", default: true },
         attachments: {
           type: "array",
           description: "Attachments with base64 encoded content.",
@@ -216,6 +222,8 @@ const TOOLS = [
         isHtml: { type: "boolean", description: "Send body as HTML (ignored when markdownBody is provided).", default: false },
         cc: { type: "string", description: "CC recipients, comma-separated." },
         bcc: { type: "string", description: "BCC recipients, comma-separated." },
+        fromName: { type: "string", description: "Optional display name for the From header." },
+        sanitizeHtml: { type: "boolean", description: "Strip scripts and remote image beacons from HTML before delivery. Defaults to true.", default: true },
         attachments: {
           type: "array",
           description: "Attachments with base64 encoded content.",
@@ -498,6 +506,9 @@ const TOOLS = [
         isStarred: { type: "boolean", description: "Starred status filter." },
         dateFrom: { type: "string", description: "Inclusive start date/time in ISO format." },
         dateTo: { type: "string", description: "Inclusive end date/time in ISO format." },
+        sizeLarger: { type: "number", description: "Only return messages larger than this size in bytes." },
+        sizeSmaller: { type: "number", description: "Only return messages smaller than this size in bytes." },
+        listId: { type: "string", description: "Filter by List-ID header value (mailing list filter)." },
         limit: { type: "number", description: "Maximum results.", default: 100 },
         includeSnippet: { type: "boolean", description: "Fetch a short plain-text preview of each matched email body. Slightly slower but avoids follow-up get_email_by_id calls for triage.", default: false },
       },
@@ -654,6 +665,68 @@ const TOOLS = [
         },
       },
       required: ["emailId"],
+    },
+  },
+  {
+    name: "update_message_flags",
+    description: "Add or remove arbitrary IMAP flags on a single message, then verify the server applied them. Returns notApplied[] listing any flags the server silently dropped. Use for custom flags or when you need lower-level control than mark_email_read / star_email.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        emailId: { type: "string", description: "Composite email id in FOLDER::UID format." },
+        flagsToAdd: {
+          type: "array",
+          items: { type: "string" },
+          description: "IMAP flags to set, e.g. [\"\\\\Seen\", \"\\\\Flagged\", \"\\\\Answered\"].",
+        },
+        flagsToRemove: {
+          type: "array",
+          items: { type: "string" },
+          description: "IMAP flags to clear.",
+        },
+      },
+      required: ["emailId"],
+    },
+  },
+  {
+    name: "count_messages",
+    description: "Count messages matching search criteria without fetching full message data. Use to check how many messages a search would return before running it, or to build folder statistics. Supports all search_emails filters.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        folder: { type: "string", description: "Folder to count in. Defaults to INBOX." },
+        query: { type: "string", description: "Free-text filter." },
+        from: { type: "string", description: "Sender filter." },
+        subject: { type: "string", description: "Subject filter." },
+        isRead: { type: "boolean", description: "Read status filter." },
+        isStarred: { type: "boolean", description: "Starred status filter." },
+        dateFrom: { type: "string", description: "Inclusive start date in ISO format." },
+        dateTo: { type: "string", description: "Inclusive end date in ISO format." },
+        sizeLarger: { type: "number", description: "Only count messages larger than this size in bytes." },
+        sizeSmaller: { type: "number", description: "Only count messages smaller than this size in bytes." },
+      },
+    },
+  },
+  {
+    name: "folder_stats",
+    description: "Return live message count, unseen count, uidNext, and uidValidity for a mailbox folder. Use for health checks and to monitor unread counts without fetching messages.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        folder: { type: "string", description: "Folder path. Defaults to INBOX." },
+      },
+    },
+  },
+  {
+    name: "empty_folder",
+    description: "Permanently delete ALL messages in a folder. This action is irreversible. Only available when PROTONMAIL_ALLOW_EMPTY_FOLDER=true. Use with caution — typically for Trash or Spam cleanup. Returns the number of messages deleted.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        folder: { type: "string", description: "Folder path to empty (e.g. 'Trash', 'Spam')." },
+        confirmed: { type: "boolean", description: "Must be true to execute. Call with confirmed:false first to see a preview of what would be deleted." },
+      },
+      required: ["folder"],
     },
   },
   {
@@ -2138,6 +2211,7 @@ export function buildConfigFromEnv(): ProtonMailConfig {
   const idleWatchEnabled = parseBooleanEnv("PROTONMAIL_IDLE_WATCH", autoSync);
   const idleMaxSeconds = parseIntegerEnv("PROTONMAIL_IDLE_MAX_SECONDS", 30, 5, 300);
   const confirmDestructive = parseBooleanEnv("PROTONMAIL_CONFIRM_DESTRUCTIVE", false);
+  const allowEmptyFolder = parseBooleanEnv("PROTONMAIL_ALLOW_EMPTY_FOLDER", false);
 
   logger.setDebugMode(debug);
 
@@ -2174,6 +2248,7 @@ export function buildConfigFromEnv(): ProtonMailConfig {
       idleWatchEnabled,
       idleMaxSeconds,
       confirmDestructive,
+      allowEmptyFolder,
     },
   };
 }
@@ -2363,6 +2438,8 @@ export function createServer(
           const htmlBody = markdownBodySend ? renderMarkdown(markdownBodySend).html : undefined;
           const priority = optionalString(args, "priority");
           const replyTo = optionalString(args, "replyTo");
+          const fromName = optionalString(args, "fromName");
+          const sanitizeHtml = normalizeBoolean(args.sanitizeHtml, true);
           const attachments = optionalAttachmentList(args.attachments);
 
           ensureValidEmails(to, "to");
@@ -2381,6 +2458,8 @@ export function createServer(
               body,
               isHtml,
               htmlBody,
+              fromName,
+              sanitizeHtml,
               priority:
                 priority === "high" || priority === "low" || priority === "normal"
                   ? priority
@@ -2425,6 +2504,8 @@ export function createServer(
           const isHtml = markdownBodyReply ? false : normalizeBoolean(args.isHtml, false);
           const htmlBody = markdownBodyReply ? renderMarkdown(markdownBodyReply).html : undefined;
           const replyAll = normalizeBoolean(args.replyAll, false);
+          const fromNameReply = optionalString(args, "fromName");
+          const sanitizeHtmlReply = normalizeBoolean(args.sanitizeHtml, true);
           const attachments = optionalAttachmentList(args.attachments);
           const extraCc = parseEmails(optionalString(args, "cc"));
           const extraBcc = parseEmails(optionalString(args, "bcc"));
@@ -2449,6 +2530,8 @@ export function createServer(
               body: buildReplyText(detail, body),
               isHtml,
               htmlBody,
+              fromName: fromNameReply,
+              sanitizeHtml: sanitizeHtmlReply,
               inReplyTo: detail.messageId,
               references: detail.messageId ? [detail.messageId] : undefined,
               attachments,
@@ -2474,6 +2557,8 @@ export function createServer(
           const bodyRa = markdownBodyRa ? markdownBodyRa : requireString(args, "body");
           const isHtmlRa = markdownBodyRa ? false : normalizeBoolean(args.isHtml, false);
           const htmlBodyRa = markdownBodyRa ? renderMarkdown(markdownBodyRa).html : undefined;
+          const fromNameRa = optionalString(args, "fromName");
+          const sanitizeHtmlRa = normalizeBoolean(args.sanitizeHtml, true);
           const attachmentsRa = optionalAttachmentList(args.attachments);
           const extraCcRa = parseEmails(optionalString(args, "cc"));
           const extraBccRa = parseEmails(optionalString(args, "bcc"));
@@ -2498,6 +2583,8 @@ export function createServer(
               body: buildReplyText(detailRa, bodyRa),
               isHtml: isHtmlRa,
               htmlBody: htmlBodyRa,
+              fromName: fromNameRa,
+              sanitizeHtml: sanitizeHtmlRa,
               inReplyTo: detailRa.messageId,
               references: detailRa.messageId ? [detailRa.messageId] : undefined,
               attachments: attachmentsRa,
@@ -2526,6 +2613,8 @@ export function createServer(
           const body = markdownBodyFwd ?? optionalString(args, "body");
           const isHtml = markdownBodyFwd ? false : normalizeBoolean(args.isHtml, false);
           const htmlBody = markdownBodyFwd ? renderMarkdown(markdownBodyFwd).html : undefined;
+          const fromNameFwd = optionalString(args, "fromName");
+          const sanitizeHtmlFwd = normalizeBoolean(args.sanitizeHtml, true);
           const attachments = optionalAttachmentList(args.attachments);
 
           ensureValidEmails(to, "to");
@@ -2541,6 +2630,8 @@ export function createServer(
               body: buildForwardText(detail, body),
               isHtml,
               htmlBody,
+              fromName: fromNameFwd,
+              sanitizeHtml: sanitizeHtmlFwd,
               attachments,
             }),
           );
@@ -3036,6 +3127,9 @@ export function createServer(
             isStarred: typeof args.isStarred === "boolean" ? args.isStarred : undefined,
             dateFrom: optionalString(args, "dateFrom"),
             dateTo: optionalString(args, "dateTo"),
+            sizeLarger: typeof args.sizeLarger === "number" ? args.sizeLarger : undefined,
+            sizeSmaller: typeof args.sizeSmaller === "number" ? args.sizeSmaller : undefined,
+            listId: optionalString(args, "listId"),
             limit: typeof args.limit === "number" ? args.limit : undefined,
             includeSnippet: normalizeBoolean(args.includeSnippet, false),
           });
@@ -3058,6 +3152,70 @@ export function createServer(
             imapService.updateMessageLabels(emailId, labelsToAdd, labelsToRemove),
           );
           return createTextResult(result, false, [emailSource({ id: emailId } as Parameters<typeof emailSource>[0])]);
+        }
+
+        case "update_message_flags": {
+          ensureMailboxWriteAllowed(config.runtime);
+          const emailId = requireString(args, "emailId");
+          const flagsToAdd = Array.isArray(args.flagsToAdd)
+            ? (args.flagsToAdd as unknown[]).map(String)
+            : [];
+          const flagsToRemove = Array.isArray(args.flagsToRemove)
+            ? (args.flagsToRemove as unknown[]).map(String)
+            : [];
+          if (flagsToAdd.length === 0 && flagsToRemove.length === 0) {
+            throw new McpError(ErrorCode.InvalidParams, "Provide at least one flag in flagsToAdd or flagsToRemove.");
+          }
+          const result = await withAudit(auditService, name, args, async () =>
+            imapService.updateMessageFlags(emailId, flagsToAdd, flagsToRemove),
+          );
+          return createTextResult(result, false, [emailSource({ id: emailId } as Parameters<typeof emailSource>[0])]);
+        }
+
+        case "count_messages": {
+          const result = await imapService.countMessages({
+            folder: optionalString(args, "folder"),
+            query: optionalString(args, "query"),
+            from: optionalString(args, "from"),
+            subject: optionalString(args, "subject"),
+            isRead: typeof args.isRead === "boolean" ? args.isRead : undefined,
+            isStarred: typeof args.isStarred === "boolean" ? args.isStarred : undefined,
+            dateFrom: optionalString(args, "dateFrom"),
+            dateTo: optionalString(args, "dateTo"),
+            sizeLarger: typeof args.sizeLarger === "number" ? args.sizeLarger : undefined,
+            sizeSmaller: typeof args.sizeSmaller === "number" ? args.sizeSmaller : undefined,
+          });
+          return createTextResult(result);
+        }
+
+        case "folder_stats": {
+          const result = await imapService.getFolderStats(optionalString(args, "folder"));
+          return createTextResult(result);
+        }
+
+        case "empty_folder": {
+          if (!config.runtime.allowEmptyFolder) {
+            throw new McpError(
+              ErrorCode.InvalidParams,
+              "empty_folder is disabled. Set PROTONMAIL_ALLOW_EMPTY_FOLDER=true to enable.",
+            );
+          }
+          ensureMailboxWriteAllowed(config.runtime);
+          const folder = requireString(args, "folder");
+          const confirmed = normalizeBoolean(args.confirmed, false);
+          if (!confirmed) {
+            const stats = await imapService.getFolderStats(folder);
+            return createTextResult({
+              preview: true,
+              folder,
+              wouldDelete: stats.total,
+              message: `This would permanently delete ${stats.total} messages from "${folder}". Call again with confirmed:true to execute.`,
+            });
+          }
+          const result = await withAudit(auditService, name, args, async () =>
+            imapService.emptyFolder(folder),
+          );
+          return createTextResult(result);
         }
 
         case "get_folders":

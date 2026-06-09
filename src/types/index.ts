@@ -40,6 +40,10 @@ export interface SendEmailInput {
   isHtml?: boolean;
   /** Pre-rendered HTML body. When set, sent as multipart/alternative with `body` as plain-text fallback. */
   htmlBody?: string;
+  /** Override the display name in the From header without changing the address. */
+  fromName?: string;
+  /** Strip scripts, event handlers, and remote image beacons before delivery. Defaults to true when body is HTML. */
+  sanitizeHtml?: boolean;
   priority?: "high" | "normal" | "low";
   replyTo?: string;
   inReplyTo?: string;
@@ -282,6 +286,10 @@ export interface SearchEmailsInput {
   dateTo?: string;
   limit?: number;
   includeSnippet?: boolean;
+  sizeLarger?: number;
+  sizeSmaller?: number;
+  listId?: string;
+  messageId?: string;
 }
 
 export interface SyncEmailsInput {
@@ -340,6 +348,7 @@ export interface ProtonRuntimeConfig {
   idleWatchEnabled: boolean;
   idleMaxSeconds: number;
   confirmDestructive: boolean;
+  allowEmptyFolder: boolean;
 }
 
 export interface BackgroundSyncStatus {

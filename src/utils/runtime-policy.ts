@@ -13,6 +13,7 @@ export function sanitizeRuntimeConfig(runtime: ProtonRuntimeConfig): Record<stri
     idleWatchEnabled: runtime.idleWatchEnabled,
     idleMaxSeconds: runtime.idleMaxSeconds,
     confirmDestructive: runtime.confirmDestructive,
+    allowEmptyFolder: runtime.allowEmptyFolder,
   };
 }
 

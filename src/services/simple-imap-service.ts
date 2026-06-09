@@ -756,13 +756,37 @@ export class SimpleIMAPService {
     };
   }
 
+  /** Re-FETCH flags after a STORE op and return any flags the server silently dropped. */
+  private async verifyFlags(
+    client: ImapFlow,
+    uid: number,
+    expectedFlags: string[],
+    expectPresent: boolean,
+  ): Promise<string[]> {
+    const notApplied: string[] = [];
+    try {
+      const msg = await client.fetchOne(String(uid), { flags: true }, { uid: true });
+      if (msg !== false) {
+        const actual = new Set(Array.from(msg.flags ?? []).map((f: string) => f.toLowerCase()));
+        for (const flag of expectedFlags) {
+          const present = actual.has(flag.toLowerCase());
+          if (expectPresent && !present) notApplied.push(flag);
+          if (!expectPresent && present) notApplied.push(flag);
+        }
+      }
+    } catch { /* best-effort */ }
+    return notApplied;
+  }
+
   async markEmailRead(emailId: string, isRead = true): Promise<{
     emailId: string;
     folder: string;
     uid: number;
     isRead: boolean;
+    notApplied: string[];
   }> {
     const { folder, uid } = parseEmailId(emailId);
+    let notApplied: string[] = [];
 
     await this.withMailbox(folder, false, async (client) => {
       if (isRead) {
@@ -770,10 +794,11 @@ export class SimpleIMAPService {
       } else {
         await client.messageFlagsRemove(String(uid), ["\\Seen"], { uid: true });
       }
+      notApplied = await this.verifyFlags(client, uid, ["\\Seen"], isRead);
     });
 
     this.updateCachedMessage(emailId, (email) => ({ ...email, isRead }));
-    return { emailId, folder, uid, isRead };
+    return { emailId, folder, uid, isRead, notApplied };
   }
 
   async starEmail(emailId: string, isStarred = true): Promise<{
@@ -781,8 +806,10 @@ export class SimpleIMAPService {
     folder: string;
     uid: number;
     isStarred: boolean;
+    notApplied: string[];
   }> {
     const { folder, uid } = parseEmailId(emailId);
+    let notApplied: string[] = [];
 
     await this.withMailbox(folder, false, async (client) => {
       if (isStarred) {
@@ -790,10 +817,11 @@ export class SimpleIMAPService {
       } else {
         await client.messageFlagsRemove(String(uid), ["\\Flagged"], { uid: true });
       }
+      notApplied = await this.verifyFlags(client, uid, ["\\Flagged"], isStarred);
     });
 
     this.updateCachedMessage(emailId, (email) => ({ ...email, isStarred }));
-    return { emailId, folder, uid, isStarred };
+    return { emailId, folder, uid, isStarred, notApplied };
   }
 
   async moveEmail(emailId: string, targetFolder: string): Promise<{
@@ -926,6 +954,95 @@ export class SimpleIMAPService {
     }
 
     return { emailId, added, removed, notFound };
+  }
+
+  async updateMessageFlags(
+    emailId: string,
+    flagsToAdd: string[],
+    flagsToRemove: string[],
+  ): Promise<{ emailId: string; added: string[]; removed: string[]; notApplied: string[] }> {
+    const { folder, uid } = parseEmailId(emailId);
+    let notApplied: string[] = [];
+
+    await this.withMailbox(folder, false, async (client) => {
+      if (flagsToAdd.length > 0) {
+        await client.messageFlagsAdd(String(uid), flagsToAdd, { uid: true });
+      }
+      if (flagsToRemove.length > 0) {
+        await client.messageFlagsRemove(String(uid), flagsToRemove, { uid: true });
+      }
+      // Verify adds
+      const notAppliedAdds = flagsToAdd.length > 0
+        ? await this.verifyFlags(client, uid, flagsToAdd, true)
+        : [];
+      // Verify removes
+      const notAppliedRemoves = flagsToRemove.length > 0
+        ? await this.verifyFlags(client, uid, flagsToRemove, false)
+        : [];
+      notApplied = [...notAppliedAdds, ...notAppliedRemoves];
+    });
+
+    return { emailId, added: flagsToAdd, removed: flagsToRemove, notApplied };
+  }
+
+  async countMessages(input: SearchEmailsInput = {}): Promise<{
+    folder: string;
+    count: number;
+  }> {
+    const folder = input.folder ?? "INBOX";
+    const query = this.buildSearchQuery(input);
+
+    const count = await this.withMailbox(folder, true, async (client) => {
+      const uids = await client.search(query, { uid: true });
+      return Array.isArray(uids) ? uids.length : 0;
+    });
+
+    return { folder, count };
+  }
+
+  async getFolderStats(folder?: string): Promise<{
+    folder: string;
+    total: number;
+    unseen: number;
+    uidNext?: number;
+    uidValidity?: string;
+  }> {
+    const target = folder ?? "INBOX";
+
+    return this.withMailbox(target, true, async (client) => {
+      const mailbox = client.mailbox || undefined;
+      const status = await client.status(target, { messages: true, unseen: true, uidNext: true, uidValidity: true });
+      return {
+        folder: target,
+        total: status?.messages ?? mailbox?.exists ?? 0,
+        unseen: status?.unseen ?? 0,
+        uidNext: status?.uidNext ?? mailbox?.uidNext,
+        uidValidity: (status?.uidValidity ?? mailbox?.uidValidity)?.toString(),
+      };
+    });
+  }
+
+  async emptyFolder(folder: string): Promise<{ folder: string; deleted: number }> {
+    const uids: number[] = await this.withMailbox(folder, true, async (client) => {
+      const found = await client.search({ all: true }, { uid: true });
+      return Array.isArray(found) ? found : [];
+    });
+
+    if (uids.length === 0) {
+      return { folder, deleted: 0 };
+    }
+
+    const uidSet = uids.join(",");
+    await this.withMailbox(folder, false, async (client) => {
+      await client.messageDelete(uidSet, { uid: true });
+    });
+
+    // Purge from cache
+    for (const uid of uids) {
+      this.messageCache.delete(createEmailId(folder, uid));
+    }
+
+    return { folder, deleted: uids.length };
   }
 
   async syncEmails(input: SyncEmailsInput = {}): Promise<{
@@ -1269,6 +1386,19 @@ export class SimpleIMAPService {
     }
     if (dateTo) {
       query.before = nextDay(dateTo);
+    }
+
+    if (input.sizeLarger) {
+      query.larger = input.sizeLarger;
+    }
+    if (input.sizeSmaller) {
+      query.smaller = input.sizeSmaller;
+    }
+    if (input.listId || input.messageId) {
+      const headers: Record<string, string> = { ...(query.header as Record<string, string> | undefined) };
+      if (input.listId) headers["List-ID"] = input.listId;
+      if (input.messageId) headers["Message-ID"] = input.messageId;
+      query.header = headers;
     }
 
     if (Object.keys(query).length === 0) {

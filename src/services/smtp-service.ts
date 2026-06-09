@@ -76,6 +76,15 @@ export class SMTPService {
     return this.transporter;
   }
 
+  private sanitizeHtmlContent(html: string): string {
+    return html
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
+      .replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "")
+      .replace(/(<img\b[^>]*?\bsrc\s*=\s*["'])(?!data:|cid:|#)([^"']*)/gi, "$1")
+      .replace(/\bhref\s*=\s*["']javascript:[^"']*["']/gi, 'href="#"');
+  }
+
   private buildMailOptions(input: SendEmailInput): Record<string, unknown> {
     const attachments = (input.attachments ?? []).map((attachment) => {
       const contentDisposition: "attachment" | "inline" | undefined =
@@ -95,14 +104,25 @@ export class SMTPService {
       };
     });
 
+    const fromAddress = this.config.smtp.username;
+    const from = input.fromName
+      ? `"${input.fromName.replace(/"/g, "")}" <${fromAddress}>`
+      : fromAddress;
+
+    const shouldSanitize = input.sanitizeHtml !== false && (input.isHtml || input.htmlBody !== undefined);
+    const htmlContent = input.htmlBody ?? (input.isHtml ? input.body : undefined);
+    const sanitizedHtml = shouldSanitize && htmlContent
+      ? this.sanitizeHtmlContent(htmlContent)
+      : htmlContent;
+
     return {
-      from: this.config.smtp.username,
+      from,
       to: input.to.join(", "),
       cc: input.cc?.join(", "),
       bcc: input.bcc?.join(", "),
       subject: input.subject,
-      text: input.htmlBody ? input.body : (input.isHtml ? undefined : input.body),
-      html: input.htmlBody ?? (input.isHtml ? input.body : undefined),
+      text: sanitizedHtml ? input.body : (input.isHtml ? undefined : input.body),
+      html: sanitizedHtml,
       replyTo: input.replyTo,
       inReplyTo: input.inReplyTo,
       references: input.references,

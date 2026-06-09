@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented here.
 
+## [1.13.0] — 2026-06-09
+
+### Added
+- `update_message_flags` tool — add or remove arbitrary IMAP flags with post-STORE server verification; returns `notApplied[]` listing flags the server silently dropped
+- `count_messages` tool — count messages matching any `search_emails` filter without fetching full message data; useful for inbox statistics and pre-flight checks
+- `folder_stats` tool — return live `total`, `unseen`, `uidNext`, and `uidValidity` for any folder via `STATUS` command
+- `empty_folder` tool — permanently delete all messages in a folder; gated behind `PROTONMAIL_ALLOW_EMPTY_FOLDER=true`; dry-run preview when `confirmed` is omitted
+- `fromName` parameter on `send_email`, `reply_to_email`, `reply_all_email`, `forward_email` — override the display name in the From header without changing the sending address
+- `sanitizeHtml` parameter on all send tools — strip `<script>`, event handlers, and remote image beacons before SMTP delivery; defaults to `true` when body is HTML
+- `sizeLarger` and `sizeSmaller` parameters on `search_emails` — filter by message size in bytes (IMAP `LARGER`/`SMALLER` criteria)
+- `listId` parameter on `search_emails` — filter by `List-ID` header for mailing-list triage
+- Post-STORE flag verification on `mark_email_read` and `star_email` — after setting/clearing the flag, re-FETCHes to confirm and reports `notApplied[]` in the response
+- `PROTONMAIL_ALLOW_EMPTY_FOLDER` environment variable — runtime gate for the `empty_folder` tool
+
+### Fixed
+- `search_emails` now passes `sizeLarger`/`sizeSmaller` as IMAP `LARGER`/`SMALLER` and `listId`/`messageId` as header criteria directly to the server, reducing round-trips
+
 ## [1.12.1] — 2026-06-09
 
 ### Added
