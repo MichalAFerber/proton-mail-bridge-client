@@ -2453,8 +2453,7 @@ function readEnvValue(name: string): string | undefined {
 
   const command = process.env[`${name}_COMMAND`]?.trim();
   if (command) {
-    const parts = command.split(/\s+/);
-    return execFileSync(parts[0], parts.slice(1), { encoding: "utf-8" }).trim();
+    return execFileSync("/bin/sh", ["-c", command], { encoding: "utf-8" }).trim();
   }
 
   const filePath = process.env[`${name}_FILE`]?.trim();

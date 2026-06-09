@@ -21,6 +21,11 @@ function createRuntime(overrides = {}) {
     idleWatchEnabled: true,
     idleMaxSeconds: 30,
     confirmDestructive: false,
+    allowEmptyFolder: false,
+    restrictOutboundToSelf: false,
+    allowFileDownloadDir: undefined,
+    maxInlineBytes: 40960,
+    opDelayMs: 0,
     ...overrides,
   };
 }
@@ -60,6 +65,11 @@ test("sanitized runtime config excludes secrets and preserves policy flags", () 
     idleWatchEnabled: true,
     idleMaxSeconds: 30,
     confirmDestructive: false,
+    allowEmptyFolder: false,
+    restrictOutboundToSelf: false,
+    allowFileDownloadDir: null,
+    maxInlineBytes: 40960,
+    opDelayMs: 0,
   });
 });
 
