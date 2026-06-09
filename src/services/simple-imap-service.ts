@@ -176,13 +176,30 @@ export function planFolderSync(input: {
 }
 
 function mapFolder(entry: ListResponse): FolderInfo {
+  const noselect = entry.flags
+    ? Array.from(entry.flags).some((f) => f.toLowerCase() === "\\noselect")
+    : false;
+
+  // Prefer the specialUse attribute reported by the server; fall back to name heuristics.
+  let specialUse = entry.specialUse || undefined;
+  if (!specialUse) {
+    const nameLower = entry.name.toLowerCase();
+    if (nameLower === "inbox") specialUse = "\\Inbox";
+    else if (nameLower === "sent" || nameLower === "sent mail") specialUse = "\\Sent";
+    else if (nameLower === "drafts" || nameLower === "draft") specialUse = "\\Drafts";
+    else if (nameLower === "trash" || nameLower === "deleted" || nameLower === "deleted items") specialUse = "\\Trash";
+    else if (nameLower === "spam" || nameLower === "junk" || nameLower === "junk e-mail") specialUse = "\\Junk";
+    else if (nameLower === "archive" || nameLower === "all mail") specialUse = "\\Archive";
+  }
+
   return {
     path: entry.path,
     name: entry.name,
     delimiter: entry.delimiter,
-    specialUse: entry.specialUse,
+    specialUse,
     listed: entry.listed,
     subscribed: entry.subscribed,
+    noselect,
     flags: [...entry.flags],
     messages: entry.status?.messages,
     unseen: entry.status?.unseen,
@@ -206,6 +223,7 @@ export class SimpleIMAPService {
   private lastIdleChangeAt?: string;
   private lastIdleEventCount?: number;
   private lastIdleError?: string;
+  private _lastOpTs = 0;
 
   constructor(
     private readonly config: ProtonMailConfig,
@@ -1856,6 +1874,12 @@ export class SimpleIMAPService {
     if (input.to) {
       query.to = input.to;
     }
+    if (input.cc) {
+      query.cc = input.cc;
+    }
+    if (input.bcc) {
+      query.bcc = input.bcc;
+    }
     if (input.subject) {
       query.subject = input.subject;
     }
@@ -2167,6 +2191,53 @@ export class SimpleIMAPService {
       const source = message.source;
       return this.parseSource(source);
     });
+  }
+
+  async sentCopyVerify(
+    messageId: string,
+    sentFolder: string,
+    maxWaitMs = 30_000,
+  ): Promise<{ found: boolean; uid?: number }> {
+    const intervalMs = 3_000;
+    const deadline = Date.now() + maxWaitMs;
+
+    try {
+      while (Date.now() < deadline) {
+        const uid = await this.withMailbox(sentFolder, true, async (client) => {
+          const result = await client.search(
+            { header: { "Message-ID": messageId } },
+            { uid: true },
+          );
+          return Array.isArray(result) && result.length > 0 ? result[0] : undefined;
+        }).catch(() => undefined);
+
+        if (uid !== undefined) {
+          return { found: true, uid };
+        }
+
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          break;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, Math.min(intervalMs, remaining)));
+      }
+    } catch {
+      // never throw
+    }
+
+    return { found: false };
+  }
+
+  private async _throttle(delayMs: number): Promise<void> {
+    if (delayMs <= 0) {
+      return;
+    }
+    const elapsed = Date.now() - this._lastOpTs;
+    const gap = delayMs - elapsed;
+    if (gap > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, gap));
+    }
+    this._lastOpTs = Date.now();
   }
 
   private async resolveAttachmentOutputPath(

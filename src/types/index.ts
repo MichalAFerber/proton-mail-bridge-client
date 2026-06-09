@@ -255,6 +255,7 @@ export interface FolderInfo {
   specialUse?: string;
   listed: boolean;
   subscribed: boolean;
+  noselect?: boolean;
   flags: string[];
   messages?: number;
   unseen?: number;
@@ -311,6 +312,8 @@ export interface SearchEmailsInput {
   threadId?: string;
   from?: string;
   to?: string;
+  cc?: string;
+  bcc?: string;
   senderDomain?: string;
   subject?: string;
   hasAttachment?: boolean;
@@ -387,6 +390,7 @@ export interface ProtonRuntimeConfig {
   allowEmptyFolder: boolean;
   restrictOutboundToSelf: boolean;
   allowFileDownloadDir?: string;
+  maxInlineBytes: number;
 }
 
 export interface BackgroundSyncStatus {
