@@ -382,7 +382,8 @@ export function normalizeSubjectForThread(subject: string): string {
 }
 
 export function sanitizeFileName(filename?: string, fallback = "attachment"): string {
-  const normalized = (filename || fallback).replace(/[\\/:*?"<>|]+/g, "_").trim();
+  let name = (filename || fallback).normalize('NFC');
+  const normalized = name.replace(/[\\/:*?"<>|]+/g, "_").replace(/\.\./g, '_').trim();
   return normalized || fallback;
 }
 

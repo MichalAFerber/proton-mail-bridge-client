@@ -103,6 +103,9 @@ export class Logger {
     this.entries.push(entry);
     if (this.entries.length > this.maxEntries) {
       this.entries.shift();
+      if (this._droppedCount === 0) {
+        process.stderr.write('[WARN] proton-mcp: log buffer full, entries are being dropped\n');
+      }
       this._droppedCount += 1;
     }
 
