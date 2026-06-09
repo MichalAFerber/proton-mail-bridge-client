@@ -1087,14 +1087,25 @@ async function runEmptyFolder(parsed: ParsedCliArgs): Promise<void> {
 
 async function runBulkDelete(parsed: ParsedCliArgs): Promise<void> {
   const from = getStringFlag(parsed.flags, "from");
+  const subject = getStringFlag(parsed.flags, "subject");
+  const since = getStringFlag(parsed.flags, "since");
+  const before = getStringFlag(parsed.flags, "before");
   const wantJson = isTruthyFlag(parsed.flags.json);
   await withMcpClient(async (client) => {
     const result = await client.callTool({
       name: "bulk_delete",
       arguments: {
         folder: getStringFlag(parsed.flags, "folder"),
-        match: from ? { from } : {},
+        match: {
+          ...(from ? { from } : {}),
+          ...(subject ? { subject } : {}),
+          ...(since ? { since } : {}),
+          ...(before ? { before } : {}),
+        },
         dryRun: isTruthyFlag(parsed.flags["dry-run"]) || undefined,
+        permanent: isTruthyFlag(parsed.flags.permanent) || undefined,
+        maxBatchSize: getStringFlag(parsed.flags, "max") ? getNumberFlag(parsed.flags, "max", 0) : undefined,
+        confirmed: isTruthyFlag(parsed.flags.confirmed) || undefined,
       },
     });
     printToolCallResult(result as Record<string, unknown>, wantJson);
@@ -1105,6 +1116,9 @@ async function runBulkMove(parsed: ParsedCliArgs): Promise<void> {
   const targetFolder = parsed.positionals[0] || getStringFlag(parsed.flags, "target-folder");
   if (!targetFolder) throw new Error("bulk-move requires a target folder argument");
   const from = getStringFlag(parsed.flags, "from");
+  const subject = getStringFlag(parsed.flags, "subject");
+  const since = getStringFlag(parsed.flags, "since");
+  const before = getStringFlag(parsed.flags, "before");
   const wantJson = isTruthyFlag(parsed.flags.json);
   await withMcpClient(async (client) => {
     const result = await client.callTool({
@@ -1112,8 +1126,14 @@ async function runBulkMove(parsed: ParsedCliArgs): Promise<void> {
       arguments: {
         targetFolder,
         folder: getStringFlag(parsed.flags, "folder"),
-        match: from ? { from } : {},
+        match: {
+          ...(from ? { from } : {}),
+          ...(subject ? { subject } : {}),
+          ...(since ? { since } : {}),
+          ...(before ? { before } : {}),
+        },
         dryRun: isTruthyFlag(parsed.flags["dry-run"]) || undefined,
+        maxBatchSize: getStringFlag(parsed.flags, "max") ? getNumberFlag(parsed.flags, "max", 0) : undefined,
       },
     });
     printToolCallResult(result as Record<string, unknown>, wantJson);
@@ -1133,7 +1153,11 @@ async function runGetLogs(parsed: ParsedCliArgs): Promise<void> {
   await withMcpClient(async (client) => {
     const result = await client.callTool({
       name: "get_logs",
-      arguments: { limit: getNumberFlag(parsed.flags, "limit", 100) },
+      arguments: {
+        limit: getNumberFlag(parsed.flags, "limit", 100),
+        level: getStringFlag(parsed.flags, "level"),
+        offset: getStringFlag(parsed.flags, "offset") ? getNumberFlag(parsed.flags, "offset", 0) : undefined,
+      },
     });
     printToolCallResult(result as Record<string, unknown>, wantJson);
   });

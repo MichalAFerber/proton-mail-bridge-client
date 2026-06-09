@@ -3,8 +3,9 @@ import nodemailer, { type SentMessageInfo, type Transporter } from "nodemailer";
 import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import sanitizeHtml from "sanitize-html";
 import type { ProtonMailConfig, SendEmailInput } from "../types/index.js";
+import { logger } from "../utils/logger.js";
 
-function sanitizeHeader(value: string): string {
+export function sanitizeHeader(value: string): string {
   return value.replace(/[\r\n\0]/g, " ").trim();
 }
 
@@ -148,11 +149,25 @@ export class SMTPService {
     const messageId = input.messageId
       ? sanitizeHeader(input.messageId)
       : `<${randomUUID()}@protonmail.local>`;
+    const inReplyTo = input.inReplyTo ? sanitizeHeader(input.inReplyTo) : undefined;
+    const references = Array.isArray(input.references)
+      ? input.references.map((reference) => sanitizeHeader(reference))
+      : input.references
+        ? sanitizeHeader(input.references)
+        : undefined;
     const from = fromName
       ? `"${fromName}" <${fromAddress}>`
       : fromAddress;
 
-    const shouldSanitize = input.sanitizeHtml !== false && (input.isHtml || input.htmlBody !== undefined);
+    const unsafeHtmlAllowed = process.env.PROTONMAIL_ALLOW_UNSAFE_HTML === "true";
+    if (input.sanitizeHtml === false && !unsafeHtmlAllowed) {
+      logger.warn(
+        "sanitizeHtml=false was suppressed because PROTONMAIL_ALLOW_UNSAFE_HTML is not true.",
+        "SMTPService",
+      );
+    }
+    const shouldSanitize = (input.sanitizeHtml !== false || !unsafeHtmlAllowed)
+      && (input.isHtml || input.htmlBody !== undefined);
     const htmlContent = input.htmlBody ?? (input.isHtml ? input.body : undefined);
     const sanitizedHtml = shouldSanitize && htmlContent
       ? this.sanitizeHtmlContent(htmlContent)
@@ -167,8 +182,8 @@ export class SMTPService {
       text: sanitizedHtml ? input.body : (input.isHtml ? undefined : input.body),
       html: sanitizedHtml,
       replyTo,
-      inReplyTo: input.inReplyTo,
-      references: input.references,
+      inReplyTo,
+      references,
       messageId,
       attachments,
       priority: input.priority ?? "normal",

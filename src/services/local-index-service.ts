@@ -90,6 +90,7 @@ interface SnapshotLoadOptions {
   limit?: number;
   offset?: number;
   folder?: string;
+  label?: string;
   isRead?: boolean;
   since?: string;
 }
@@ -543,7 +544,7 @@ export class LocalIndexService {
   }): Promise<LocalIndexStatus> {
     const db = await this.ensureDb();
     const ownerEmail = lowerCaseAddress(this.config.smtp.username);
-    this.applySnapshot(db, input, ownerEmail);
+    this.applySnapshot(db, input, ownerEmail, input.folderStats.some((entry) => entry.strategy === "full"));
     return this.getStatus();
   }
 
@@ -712,12 +713,12 @@ export class LocalIndexService {
       .slice(0, limit);
   }
 
-  async getThreads(input: { query?: string; label?: string; limit?: number } = {}): Promise<{
+  async getThreads(input: { query?: string; folder?: string; label?: string; limit?: number } = {}): Promise<{
     total: number;
     hasMore: boolean;
     threads: ThreadSummary[];
   }> {
-    const snapshot = await this.loadSnapshot();
+    const snapshot = await this.loadSnapshot({ folder: input.folder, label: input.label });
     const threads = this.buildThreads(snapshot).filter((thread) => {
       if (input.label) {
         const labelNeedle = input.label.toLowerCase();
@@ -1159,6 +1160,7 @@ export class LocalIndexService {
       folderStats: Array<MailboxSyncCheckpoint>;
     },
     ownerEmail?: string,
+    cleanupExpunged = false,
   ): void {
     const upsertFolder = db.prepare(`
       INSERT INTO folders (
@@ -1246,11 +1248,60 @@ export class LocalIndexService {
       INSERT INTO metadata (key, value) VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `);
+    const getStoredSyncState = db.prepare(`SELECT uid_validity FROM sync_state WHERE folder = ?`);
+    const deleteFtsForFolder = db.prepare(`
+      DELETE FROM messages_fts
+      WHERE email_id IN (SELECT email_id FROM messages WHERE folder = ?)
+    `);
+    const deleteMessagesForFolder = db.prepare(`DELETE FROM messages WHERE folder = ?`);
+    const createSnapshotUidTable = db.prepare(`
+      CREATE TEMP TABLE IF NOT EXISTS temp_snapshot_uids (
+        uid INTEGER PRIMARY KEY
+      )
+    `);
+    createSnapshotUidTable.run();
+    const clearSnapshotUidTable = db.prepare(`DELETE FROM temp_snapshot_uids`);
+    const insertSnapshotUid = db.prepare(`INSERT OR IGNORE INTO temp_snapshot_uids(uid) VALUES (?)`);
+    const deleteExpungedFts = db.prepare(`
+      DELETE FROM messages_fts
+      WHERE email_id IN (
+        SELECT email_id
+        FROM messages
+        WHERE folder = ?
+          AND uid NOT IN (SELECT uid FROM temp_snapshot_uids)
+      )
+    `);
+    const deleteExpungedMessages = db.prepare(`
+      DELETE FROM messages
+      WHERE folder = ?
+        AND uid NOT IN (SELECT uid FROM temp_snapshot_uids)
+    `);
 
     const transaction = db.transaction(() => {
       setMetadata.run("schemaVersion", String(DB_SCHEMA_VERSION));
       setMetadata.run("ownerEmail", ownerEmail || "");
       setMetadata.run("updatedAt", input.syncedAt);
+      const foldersWithResetCheckpoint = new Set<string>();
+
+      for (const folderStat of input.folderStats) {
+        const stored = getStoredSyncState.get(folderStat.folder) as { uid_validity?: string | null } | undefined;
+        const storedUidValidity = stored?.uid_validity ?? null;
+        const serverUidValidity = folderStat.uidValidity ?? null;
+        if (storedUidValidity && serverUidValidity && storedUidValidity !== serverUidValidity) {
+          this.log.warn(
+            `UIDVALIDITY changed for folder ${folderStat.folder}, clearing local index.`,
+            "LocalIndexService",
+            {
+              folder: folderStat.folder,
+              storedUidValidity,
+              serverUidValidity,
+            },
+          );
+          deleteFtsForFolder.run(folderStat.folder);
+          deleteMessagesForFolder.run(folderStat.folder);
+          foldersWithResetCheckpoint.add(folderStat.folder);
+        }
+      }
 
       for (const folder of input.folders) {
         const folderStat = input.folderStats.find((entry) => entry.folder === folder.path);
@@ -1271,14 +1322,15 @@ export class LocalIndexService {
       }
 
       for (const folderStat of input.folderStats) {
+        const resetCheckpoint = foldersWithResetCheckpoint.has(folderStat.folder);
         upsertSyncState.run({
           folder: folderStat.folder,
-          uid_validity: folderStat.uidValidity ?? null,
+          uid_validity: resetCheckpoint ? null : folderStat.uidValidity ?? null,
           uid_next: folderStat.uidNext ?? null,
-          highest_uid: folderStat.highestUid ?? null,
+          highest_uid: resetCheckpoint ? null : folderStat.highestUid ?? null,
           last_sync_at: folderStat.lastSyncAt ?? input.syncedAt,
           last_full_sync_at:
-            folderStat.strategy === "full"
+            !resetCheckpoint && folderStat.strategy === "full"
               ? folderStat.lastFullSyncAt ?? folderStat.lastSyncAt ?? input.syncedAt
               : folderStat.lastFullSyncAt ?? null,
           strategy: folderStat.strategy ?? null,
@@ -1328,6 +1380,28 @@ export class LocalIndexService {
           search.participants,
           search.attachmentNames,
         );
+      }
+
+      if (cleanupExpunged) {
+        createSnapshotUidTable.run();
+        const uidsByFullSyncFolder = new Map<string, Set<number>>();
+        for (const folderStat of input.folderStats) {
+          if (folderStat.strategy === "full") {
+            uidsByFullSyncFolder.set(folderStat.folder, new Set<number>());
+          }
+        }
+        for (const email of input.emails) {
+          uidsByFullSyncFolder.get(email.folder)?.add(email.uid);
+        }
+        for (const [folder, uids] of uidsByFullSyncFolder) {
+          clearSnapshotUidTable.run();
+          for (const uid of uids) {
+            insertSnapshotUid.run(uid);
+          }
+          deleteExpungedFts.run(folder);
+          deleteExpungedMessages.run(folder);
+        }
+        clearSnapshotUidTable.run();
       }
     });
 
@@ -1402,6 +1476,7 @@ export class LocalIndexService {
       CREATE INDEX IF NOT EXISTS idx_messages_in_reply_to ON messages(in_reply_to);
       CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages(thread_id);
       CREATE INDEX IF NOT EXISTS idx_messages_internal_date ON messages(internal_date);
+      CREATE INDEX IF NOT EXISTS idx_messages_folder_date ON messages(folder, internal_date DESC);
 
       CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
         email_id UNINDEXED,
@@ -1629,6 +1704,11 @@ export class LocalIndexService {
     if (options.folder) {
       messageConditions.push(`folder = ?`);
       messageParams.push(options.folder);
+    }
+    if (options.label) {
+      const labelNeedle = options.label.toLowerCase();
+      messageConditions.push(`(LOWER(folder) LIKE ? OR LOWER(labels_json) LIKE ?)`);
+      messageParams.push(`%${labelNeedle}%`, `%${labelNeedle}%`);
     }
     if (typeof options.isRead === "boolean") {
       messageConditions.push(`is_read = ?`);

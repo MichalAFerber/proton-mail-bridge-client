@@ -306,6 +306,7 @@ const TOOLS = [
   {
     name: "create_reply_draft",
     description: "Create a reply draft for a specific email, pre-filling To, Subject, and quoted body from the original message. Use when you have an emailId and want to stage the reply for review before sending. Prefer create_thread_reply_draft when you only have a threadId. Prefer reply_to_email to send immediately. Returns a draftId.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -343,6 +344,7 @@ const TOOLS = [
   {
     name: "create_forward_draft",
     description: "Create a forward draft for an existing email, pre-filling the original message as quoted body. Use when you have an emailId and want to stage a forward for review before sending. Prefer forward_email to send immediately without saving. Returns a draftId for later update or send via send_draft.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -380,6 +382,7 @@ const TOOLS = [
   {
     name: "list_drafts",
     description: "List all locally saved drafts with their status, subject, and timestamps. Use to review in-progress or unsent messages. Does NOT list drafts stored only on the Proton server — use list_remote_drafts for those. Prefer get_draft when you already have a draftId and need the full content.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -390,6 +393,7 @@ const TOOLS = [
   {
     name: "list_remote_drafts",
     description: "List draft messages currently stored in the Proton Drafts IMAP folder on the server. Use to see drafts created via Proton webmail or mobile app that have not been synced locally. Prefer list_drafts to see drafts managed by this server. Requires an active IMAP connection.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -401,6 +405,7 @@ const TOOLS = [
   {
     name: "get_draft",
     description: "Fetch the full content of a single locally saved draft by its draftId. Use to read or verify a draft before sending or updating. Prefer list_drafts to discover draftIds first. Does NOT fetch drafts from the Proton server — use list_remote_drafts for those.",
+    annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -453,6 +458,7 @@ const TOOLS = [
   {
     name: "sync_draft_to_remote",
     description: "Force-push a locally saved draft to the Proton Drafts IMAP folder and return the remote UID. Use when a draft was created with syncToRemote:false or when the automatic sync failed. Do NOT use this if PROTONMAIL_ALLOW_REMOTE_DRAFT_SYNC is false — the call will be rejected.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -478,7 +484,7 @@ const TOOLS = [
   {
     name: "delete_draft",
     description: "Permanently delete a locally saved draft from SQLite. Use to discard a draft you no longer need. Does NOT remove a matching draft from the Proton Drafts IMAP folder — that requires a separate mailbox action. Irreversible.",
-    annotations: { destructiveHint: false },
+    annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -771,7 +777,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        folder: { type: "string", description: "Folder path. Defaults to INBOX." },
+        folder: { type: "string", description: "Folder path. Defaults to INBOX.", default: "INBOX" },
         scanLimit: { type: "number", description: "Maximum messages to scan (1–20000, default 5000). Lower = faster but less accurate." },
       },
     },
@@ -779,6 +785,7 @@ const TOOLS = [
   {
     name: "empty_folder",
     description: "Permanently delete ALL messages in a folder. This action is irreversible. Only available when PROTONMAIL_ALLOW_EMPTY_FOLDER=true. Use with caution — typically for Trash or Spam cleanup. Returns the number of messages deleted.",
+    annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
       properties: {
@@ -1330,6 +1337,7 @@ const TOOLS = [
     name: "create_thread_reply_draft",
     description:
       "Create a reply draft from a threadId, automatically selecting the latest inbound message to reply to. Use when you have a threadId from get_threads or get_actionable_threads and want to stage a reply for review. Prefer create_reply_draft when you already have a specific emailId. Returns a draftId for later update or send.",
+    annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
@@ -1438,7 +1446,7 @@ const TOOLS = [
   {
     name: "clear_cache",
     description: "Evict all in-memory caches: folder list, message metadata, and analytics data. Use when cached data appears stale after external mailbox changes (e.g. folders modified via Proton webmail). Does NOT affect the persistent SQLite index — use clear_index for that.",
-    annotations: { destructiveHint: true },
+    annotations: { destructiveHint: false },
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -2508,7 +2516,11 @@ function parseAllowedActionsEnv(name: string): EmailAction[] {
     ALL_EMAIL_ACTIONS.includes(value as EmailAction),
   );
 
-  return allowed.length > 0 ? allowed : [...ALL_EMAIL_ACTIONS];
+  if (allowed.length === 0) {
+    throw new Error(`${name} contains no valid action names. Valid values: ${ALL_EMAIL_ACTIONS.join(", ")}`);
+  }
+
+  return allowed;
 }
 
 function isLocalBridgeHost(host: string): boolean {
@@ -2778,7 +2790,7 @@ export function createServer(
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const name = request.params.name;
     const args = asObject(request.params.arguments);
-    logger.debug("Handling tool call", "MCPServer", { name, args });
+    logger.debug("Handling tool call", "MCPServer", { name, argKeys: Object.keys(args || {}) });
 
     try {
       switch (name) {
@@ -3605,7 +3617,7 @@ export function createServer(
         case "get_email_by_id": {
           const detail = await imapService.getEmailById(requireString(args, "emailId"));
           const preferHtml = normalizeBoolean(args.preferHtml, false);
-          const maxBodyLength = typeof args.maxBodyLength === "number" ? args.maxBodyLength : undefined;
+          const maxBodyLength = normalizeLimit(args.maxBodyLength, undefined as unknown as number, 1, 500_000);
           const showHeaders = normalizeBoolean(args.showHeaders, false);
 
           let displayBody = preferHtml
@@ -4185,6 +4197,7 @@ export function createServer(
         }
 
         case "get_connection_status": {
+          const includeRawConnectionErrors = process.env.PROTONMAIL_DEBUG === "true";
           const [smtpStatus, imapStatus] = await Promise.allSettled([
             smtpService.verifyConnection(),
             imapService.ping(),
@@ -4197,9 +4210,11 @@ export function createServer(
               message:
                 smtpStatus.status === "fulfilled"
                   ? "SMTP connection verified."
-                  : smtpStatus.reason instanceof Error
-                    ? smtpStatus.reason.message
-                    : String(smtpStatus.reason),
+                  : includeRawConnectionErrors
+                    ? smtpStatus.reason instanceof Error
+                      ? smtpStatus.reason.message
+                      : String(smtpStatus.reason)
+                    : "SMTP connection failed.",
             },
             imap: {
               ok: imapStatus.status === "fulfilled",
@@ -4208,14 +4223,17 @@ export function createServer(
               message:
                 imapStatus.status === "fulfilled"
                   ? "IMAP connection verified."
-                  : imapStatus.reason instanceof Error
-                    ? imapStatus.reason.message
-                    : String(imapStatus.reason),
+                  : includeRawConnectionErrors
+                    ? imapStatus.reason instanceof Error
+                      ? imapStatus.reason.message
+                      : String(imapStatus.reason)
+                    : "IMAP connection failed.",
             },
           });
         }
 
         case "run_doctor": {
+          const includeRawConnectionErrors = process.env.PROTONMAIL_DEBUG === "true";
           const includeSmtp = normalizeBoolean(args.includeSmtp, true);
           const includeImap = normalizeBoolean(args.includeImap, true);
           const includeIdleProbe = normalizeBoolean(args.includeIdleProbe, false);
@@ -4249,9 +4267,11 @@ export function createServer(
               message:
                 smtpStatus.status === "fulfilled"
                   ? "SMTP connection verified."
-                  : smtpStatus.reason instanceof Error
-                    ? smtpStatus.reason.message
-                    : String(smtpStatus.reason),
+                  : includeRawConnectionErrors
+                    ? smtpStatus.reason instanceof Error
+                      ? smtpStatus.reason.message
+                      : String(smtpStatus.reason)
+                    : "SMTP connection failed.",
             },
             imap: {
               ok: imapStatus.status === "fulfilled",
@@ -4260,9 +4280,11 @@ export function createServer(
               message:
                 imapStatus.status === "fulfilled"
                   ? "IMAP connection verified."
-                  : imapStatus.reason instanceof Error
-                    ? imapStatus.reason.message
-                    : String(imapStatus.reason),
+                  : includeRawConnectionErrors
+                    ? imapStatus.reason instanceof Error
+                      ? imapStatus.reason.message
+                      : String(imapStatus.reason)
+                    : "IMAP connection failed.",
             },
             idleProbe:
               idleProbe === undefined
@@ -4271,7 +4293,11 @@ export function createServer(
                   ? idleProbe.value
                   : {
                       ok: false,
-                      error: idleProbe.reason instanceof Error ? idleProbe.reason.message : String(idleProbe.reason),
+                      error: includeRawConnectionErrors
+                        ? idleProbe.reason instanceof Error
+                          ? idleProbe.reason.message
+                          : String(idleProbe.reason)
+                        : "IMAP connection failed.",
                     },
             backgroundSync: backgroundSyncService.getStatus(),
             index: indexStatus,

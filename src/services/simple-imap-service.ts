@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { ImapFlow, type FetchMessageObject, type ListResponse, type SearchObject } from "imapflow";
@@ -742,6 +743,7 @@ export class SimpleIMAPService {
     attachmentId: string,
     includeBase64 = false,
   ): Promise<AttachmentContentResult> {
+    await this.assertAttachmentWithinInlineLimit(emailId, attachmentId);
     const attachment = await this.getParsedAttachment(emailId, attachmentId);
     const base64 = attachment.content.toString("base64");
 
@@ -944,7 +946,7 @@ export class SimpleIMAPService {
       }
     });
 
-    // Add labels: COPY the message into each Labels/<name> folder
+    // Add labels: COPY can partially succeed if multiple labels are added and a later COPY fails.
     for (const label of labelsToAdd) {
       const labelFolder = label.startsWith("Labels/") ? label : `Labels/${label}`;
       try {
@@ -964,18 +966,21 @@ export class SimpleIMAPService {
     for (const label of labelsToRemove) {
       const labelFolder = label.startsWith("Labels/") ? label : `Labels/${label}`;
       try {
-        let labelUid: number | undefined;
         if (messageId) {
-          await this.withMailbox(labelFolder, true, async (client) => {
+          const deleted = await this.withMailbox(labelFolder, false, async (client) => {
             const uids = await client.search({ header: { "Message-ID": messageId! } }, { uid: true });
-            labelUid = Array.isArray(uids) ? uids[0] : undefined;
-          });
-        }
-        if (labelUid) {
-          await this.withMailbox(labelFolder, false, async (client) => {
+            const labelUid = Array.isArray(uids) ? uids[0] : undefined;
+            if (!labelUid) {
+              return false;
+            }
             await client.messageDelete(String(labelUid), { uid: true });
+            return true;
           });
-          removed.push(labelFolder);
+          if (deleted) {
+            removed.push(labelFolder);
+          } else {
+            notFound.push(labelFolder);
+          }
         } else {
           notFound.push(labelFolder);
         }
@@ -2200,6 +2205,74 @@ export class SimpleIMAPService {
     return match;
   }
 
+  private async assertAttachmentWithinInlineLimit(emailId: string, attachmentId: string): Promise<void> {
+    const { folder, uid } = parseEmailId(emailId);
+    const estimatedSize = await this.withMailbox(folder, true, async (client) => {
+      const message = await client.fetchOne(String(uid), FETCH_SUMMARY_QUERY, { uid: true });
+      if (!message) {
+        throw new Error(`Email not found for id ${emailId}`);
+      }
+
+      const attachment = extractAttachments(message.bodyStructure).find(
+        (candidate) =>
+          candidate.id === attachmentId ||
+          candidate.part === attachmentId ||
+          candidate.filename === attachmentId ||
+          candidate.checksum === attachmentId,
+      );
+      return attachment?.size ?? this.findAttachmentEstimatedSize(message.bodyStructure, attachmentId);
+    });
+
+    const maxInlineBytes = (this.config.runtime.maxInlineBytes ?? 40) * 1024;
+    if (estimatedSize !== undefined && estimatedSize > maxInlineBytes * 1.5) {
+      throw new Error(
+        `Attachment too large for inline delivery (estimated ${estimatedSize} bytes). Use saveTo parameter.`,
+      );
+    }
+  }
+
+  private findAttachmentEstimatedSize(structure: unknown, attachmentId: string): number | undefined {
+    if (!structure || typeof structure !== "object") {
+      return undefined;
+    }
+
+    const node = structure as {
+      part?: unknown;
+      id?: unknown;
+      size?: unknown;
+      octets?: unknown;
+      dispositionParameters?: { filename?: unknown };
+      parameters?: { name?: unknown; filename?: unknown };
+      childNodes?: unknown[];
+    };
+    const filename =
+      typeof node.dispositionParameters?.filename === "string"
+        ? node.dispositionParameters.filename
+        : typeof node.parameters?.name === "string"
+          ? node.parameters.name
+          : typeof node.parameters?.filename === "string"
+            ? node.parameters.filename
+            : undefined;
+
+    if (node.part === attachmentId || node.id === attachmentId || filename === attachmentId) {
+      if (typeof node.size === "number") {
+        return node.size;
+      }
+      if (typeof node.octets === "number") {
+        return node.octets;
+      }
+    }
+
+    for (const child of node.childNodes ?? []) {
+      const childSize = this.findAttachmentEstimatedSize(child, attachmentId);
+      if (childSize !== undefined) {
+        return childSize;
+      }
+    }
+
+    return undefined;
+  }
+
   async sentCopyVerify(
     messageId: string,
     sentFolder: string,
@@ -2297,12 +2370,28 @@ export class SimpleIMAPService {
   private guardAttachmentOutputPath(outputPath: string): void {
     const allowDir = process.env.PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR?.trim();
     if (!allowDir) {
-      return;
+      throw new Error("outputPath requires PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR to be configured.");
     }
 
-    const allowedDir = resolve(allowDir);
     const targetPath = resolve(outputPath);
-    if (!targetPath.startsWith(`${allowedDir}/`) && targetPath !== allowedDir) {
+    const allowedRealPath = realpathSync(resolve(allowDir));
+    let targetRealPath: string;
+    try {
+      targetRealPath = realpathSync(targetPath);
+    } catch (error) {
+      if (
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        (error as { code?: string }).code === "ENOENT"
+      ) {
+        targetRealPath = realpathSync(dirname(targetPath));
+      } else {
+        throw error;
+      }
+    }
+
+    if (!targetRealPath.startsWith(`${allowedRealPath}/`) && targetRealPath !== allowedRealPath) {
       throw new Error("outputPath path escapes the allowed directory.");
     }
   }
