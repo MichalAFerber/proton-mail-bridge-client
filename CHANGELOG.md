@@ -2,6 +2,55 @@
 
 All notable changes to this project are documented here.
 
+## [1.13.4] — 2026-06-09
+
+### Security
+- **SMTP header injection**: `sanitizeHeader()` now strips CR, LF, and null bytes from `fromName`, `replyTo`, and `subject` fields before they reach the SMTP envelope
+- **HTML sanitization**: regex-based sanitization replaced with the `sanitize-html` library for robust, spec-compliant stripping
+- **outputPath containment**: file-write operations now validate that the resolved path stays within the configured data directory — unrestricted absolute paths rejected
+- **Shell injection**: `_COMMAND` env var execution switched from `execSync` (shell interpolation) to `execFileSync` (no shell) — eliminates shell metacharacter injection
+- **Message-ID privacy**: generated Message-IDs now use UUID v4 instead of `hostname` — hostname no longer leaked in outbound headers
+- **Error message sanitization**: internal error details (stack traces, file paths, credentials) scrubbed before being returned to callers via MCP
+- **Audit log credential scrubbing**: credential-shaped patterns (passwords, tokens, keys) removed from audit log entries before persistence
+- **Audit path removed from status**: `audit.path` field removed from `get_runtime_status` response — filesystem layout no longer exposed to callers
+
+### Performance
+- **Double RFC822 fetch eliminated**: attachment operations previously fetched the full RFC822 body twice; now fetched once and reused
+- **Bulk ops use IMAP UID sets**: bulk move/delete/flag operations now issue a single UID SET command instead of one command per message — O(1) instead of O(N) round-trips
+- **collectFolderForIndex metadata-only**: folder indexing now uses `ENVELOPE`/`FLAGS` fetch instead of full RFC822 body — drastically reduces data transferred
+- **loadSnapshot SQL LIMIT + filter pushdown**: snapshot query now filters and limits in SQL rather than post-processing in JS
+- **resolveThreadUids folder scan capped and cached**: repeated folder UID lookups are now cached per session and the scan depth is capped
+
+### Reliability
+- **sync_emails concurrency guard**: direct IMAP sync calls now route through `backgroundSyncService` — prevents concurrent sync collisions
+- **DraftStore async mutex**: draft read-modify-write operations are now serialized with an async mutex — eliminates lost-update race under concurrent draft saves
+- **Atomic remote draft upsert**: remote draft update now APPENDs the new message before DELETing the old one — no window where both are absent
+- **Audit log rotation race**: log rotation file swap is now atomic (rename) — eliminates the window where the log file is absent between truncate and recreate
+- **IMAP IDLE exponential backoff**: IDLE reconnection after disconnect now uses exponential backoff with jitter instead of fixed retry interval
+- **UID validity check**: IMAP UID validity (`UIDVALIDITY`) is checked before any mutating operation — stale UIDs rejected rather than silently acting on wrong messages
+
+### Fixed
+- `reply_to_email`: `body` added to required schema fields — was accepted but silently ignored when omitted
+- `batch_email_action`: `destructiveHint` annotation set to `true`
+- MCP annotations added to `apply_thread_action`, `wait_for_mailbox_changes`, `run_doctor`, `save_attachments`, `save_attachment`
+- `move_email`: returns actionable error message when target folder does not exist instead of a generic failure
+- `search_emails`: invalid date format now returns `InvalidParams` error instead of `InternalError`
+- Bulk operations: empty `emailIds` array now throws `InvalidParams` immediately instead of silently succeeding
+- `emptyFolder`: now refuses to empty `INBOX` — requires explicit folder name
+- Server version now read dynamically from `package.json` at startup instead of being hardcoded
+- `paginateRecentRecords`: pagination direction corrected — was returning records in wrong order on subsequent pages
+- `save_attachment` response no longer includes absolute filesystem paths — returns relative or display-safe paths only
+
+### Added
+- `hasMore` field in `get_emails`, `search_emails`, and `get_threads` responses — indicates whether additional pages exist
+- `dropped` count in `get_logs` output — shows how many entries were omitted due to level/limit filtering
+- `durationMs` field in audit log entries — records wall-clock time for each audited operation
+- `dataDir` absolute-path validation at startup — rejects relative paths and non-existent directories with a clear error
+- CLI commands: `empty-folder`, `bulk-delete`, `bulk-move`, `clear-cache`, `get-logs`, `folder-stats`
+- CLI `send` command: `--dry-run` and `--confirmed` flags
+- TLS startup warning when certificate verification is disabled (`PROTONMAIL_IMAP_TLS_REJECT_UNAUTHORIZED=false` or equivalent)
+- `get_labels` schema: `limit` parameter documented
+
 ## [1.13.3] — 2026-06-09
 
 ### Fixed (Critical / High)
