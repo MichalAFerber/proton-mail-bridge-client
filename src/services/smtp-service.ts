@@ -117,6 +117,7 @@ export class SMTPService {
       ],
       allowedAttributes: {
         a: ["href"],
+        "*": [],
       },
       allowedSchemes: ["http", "https", "mailto"],
       allowedSchemesAppliedToAttributes: ["href", "src"],
