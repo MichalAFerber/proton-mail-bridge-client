@@ -1482,6 +1482,32 @@ const TOOLS = [
   },
 ] as const;
 
+// Core tier: the 20 tools that cover ~80% of daily email use.
+// Set PROTONMAIL_TOOL_TIER=core to expose only these — reduces context-window burn
+// significantly on every session. Default is "full" (all tools).
+const CORE_TOOL_NAMES = new Set([
+  "get_emails",
+  "get_email_by_id",
+  "search_emails",
+  "search_indexed_emails",
+  "send_email",
+  "reply_to_email",
+  "create_draft",
+  "send_draft",
+  "trash_email",
+  "archive_email",
+  "mark_email_read",
+  "star_email",
+  "move_email",
+  "get_threads",
+  "get_thread_brief",
+  "get_inbox_digest",
+  "get_actionable_threads",
+  "get_folders",
+  "sync_emails",
+  "get_connection_status",
+]);
+
 function citationToResourceLink(source: CitationSource): ToolResult["content"][number] {
   return {
     type: "resource_link",
@@ -2658,7 +2684,10 @@ export function createServer(
     },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...TOOLS] }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const tier = (process.env.PROTONMAIL_TOOL_TIER ?? "full").trim().toLowerCase();
+    return { tools: tier === "core" ? [...TOOLS].filter((t) => CORE_TOOL_NAMES.has(t.name)) : [...TOOLS] };
+  });
 
   server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
     const cursor = request.params?.cursor ? Number.parseInt(request.params.cursor, 10) : 0;

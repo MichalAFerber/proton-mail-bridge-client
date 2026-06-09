@@ -30,6 +30,17 @@ Give Claude Desktop (or Cline, or any MCP client) full access to your Proton Mai
 - **Full CLI** — same 40+ commands, scriptable and pipeable, works in cron and shell scripts
 - **Fast local search** — full-text search across your inbox without hitting IMAP on every query
 - **Safety controls** — read-only mode, send gate, destructive-action confirmation, per-action allowlist
+- **Privacy-native** — no third-party email service involved; your mail stays on your machine
+
+---
+
+## Privacy model
+
+Your emails travel: **Proton Mail → Proton Bridge (local) → this server (local) → your AI client**.
+
+Nothing goes through a third-party email relay. Proton Bridge decrypts your mail locally; this server reads it over a local IMAP connection on `127.0.0.1`. The AI model (Claude Desktop, Cline, etc.) sees the email content you ask it to act on — that's the whole point — but no email leaves your machine except through your own Proton account when you send.
+
+If you use Claude Desktop with the default Anthropic API, conversation content (including email snippets) is sent to Anthropic per their [privacy policy](https://www.anthropic.com/privacy). If you self-host an LLM or use a local-only Claude setup, nothing leaves your machine at all.
 
 ---
 
@@ -401,6 +412,7 @@ proton-mail-bridge-client emails --folder INBOX --json | jq '[.[] | select(.isRe
 All flags work in both the MCP server and CLI:
 
 ```bash
+PROTONMAIL_TOOL_TIER=core            # expose 20 core tools instead of all 76 — saves context window
 PROTONMAIL_READ_ONLY=true            # disable all write operations
 PROTONMAIL_ALLOW_SEND=false          # disable SMTP sends only (other writes still work)
 PROTONMAIL_CONFIRM_DESTRUCTIVE=true  # require confirmed:true on send, reply, forward, delete
@@ -431,6 +443,9 @@ PROTONMAIL_PASSWORD_COMMAND='pass proton/password'
 
 # Storage
 PROTONMAIL_DATA_DIR="$HOME/.proton-mail-bridge-client"
+
+# Tools
+PROTONMAIL_TOOL_TIER='full'          # 'core' exposes 20 essential tools (saves context window); 'full' exposes all 76
 
 # Safety
 PROTONMAIL_READ_ONLY='false'
