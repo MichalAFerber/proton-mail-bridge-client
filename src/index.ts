@@ -526,7 +526,7 @@ const TOOLS = [
   },
   {
     name: "search_emails",
-    description: "Search emails via live IMAP filters with optional local post-processing for attachments and labels. Use when you need real-time results or must search messages not yet in the local index. Prefer search_indexed_emails when the index is populated — it is significantly faster and works even when Bridge IMAP is unavailable. Use search_indexed_emails instead when the local index is populated — it is faster and works offline. Use this tool only for real-time results or when the index is empty.",
+    description: "Search emails via live IMAP filters with optional local post-processing for attachments and labels. Use when you need real-time results or must find messages received after the last sync. Prefer search_indexed_emails when the local index is current — it is significantly faster and works even when Bridge IMAP is unavailable.",
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
@@ -691,7 +691,7 @@ const TOOLS = [
   },
   {
     name: "delete_email",
-    description: "Permanently delete an email from its current folder via IMAP expunge. Use only when certain the message is no longer needed. Prefer trash_email if recovery may be required. Irreversible — the message cannot be recovered after deletion.",
+    description: "Permanently delete a single email via IMAP expunge. Use only when certain the message is no longer needed. Prefer trash_email if recovery may be required. Prefer bulk_delete to delete multiple emails at once. Prefer delete_thread to delete all messages in a conversation. Irreversible.",
     annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
@@ -704,7 +704,7 @@ const TOOLS = [
   },
   {
     name: "update_message_labels",
-    description: "Add or remove Proton labels on a message without moving it. Labels are IMAP folders under the Labels/ namespace (e.g. 'Labels/Work', 'Labels/Receipts'). Adding copies the message into the label folder; removing finds and expunges it from that folder. The message stays in its source folder. Create missing labels first with create_folder using a 'Labels/' prefix.",
+    description: "Add or remove Proton labels on a single message without moving it. Labels live under the Labels/ namespace (e.g. 'Labels/Work'). Use for one message at a time. Prefer bulk_update_labels to apply label changes across multiple messages. Create missing labels first with create_folder using a 'Labels/' prefix.",
     annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
@@ -726,7 +726,7 @@ const TOOLS = [
   },
   {
     name: "update_message_flags",
-    description: "Add or remove arbitrary IMAP flags on a single message, then verify the server applied them. Returns notApplied[] listing any flags the server silently dropped. Use for custom flags or when you need lower-level control than mark_email_read / star_email.",
+    description: "Add or remove arbitrary IMAP flags on a single message, then verify the server applied them. Returns notApplied[] listing flags the server silently dropped. Use for custom IMAP flags (e.g. \\\\Answered) or when mark_email_read / star_email don't cover the flag you need. Prefer bulk_update_flags to update flags across multiple messages at once.",
     annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
@@ -748,7 +748,7 @@ const TOOLS = [
   },
   {
     name: "count_messages",
-    description: "Count messages matching search criteria without fetching full message data. Use to check how many messages a search would return before running it, or to build folder statistics. Supports all search_emails filters.",
+    description: "Count messages matching live IMAP search criteria without fetching message data. Use to preview how many results a search would return before running it. Prefer folder_stats for a simple unread/total count on one folder without filters.",
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
@@ -773,7 +773,7 @@ const TOOLS = [
   },
   {
     name: "folder_stats",
-    description: "Return live message count, unseen count, uidNext, and uidValidity for a mailbox folder. Use for health checks and to monitor unread counts without fetching messages.",
+    description: "Return live message count, unseen count, uidNext, and uidValidity for a single mailbox folder. Use to check unread counts or folder health without fetching messages. Prefer count_messages when you need to apply filters (sender, subject, date). Prefer get_email_stats for an aggregate summary across all folders.",
     inputSchema: {
       type: "object",
       properties: {
@@ -831,7 +831,7 @@ const TOOLS = [
   },
   {
     name: "bulk_update_flags",
-    description: "Add or remove IMAP flags on multiple messages simultaneously. Accepts emailIds[] OR match+folder (XOR). Returns notApplied[] per message for flags the server silently dropped.",
+    description: "Add or remove IMAP flags on multiple messages simultaneously. Use when the same flag change (e.g. \\\\Seen, \\\\Flagged) should apply to several messages. Accepts emailIds[] OR match+folder (XOR). Returns notApplied[] per message for flags the server silently dropped. Prefer update_message_flags for a single message when you need per-flag server verification.",
     annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
@@ -848,7 +848,7 @@ const TOOLS = [
   },
   {
     name: "bulk_update_labels",
-    description: "Add or remove Proton labels on multiple messages simultaneously. Labels are IMAP folders under Labels/ namespace. Accepts emailIds[] OR match+folder (XOR).",
+    description: "Add or remove Proton labels on multiple messages simultaneously. Use when the same label change should apply to several messages. Labels are IMAP folders under Labels/ namespace. Accepts emailIds[] OR match+folder (XOR).",
     annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
@@ -881,7 +881,7 @@ const TOOLS = [
   },
   {
     name: "move_thread",
-    description: "Move all messages in a thread (identified by RFC 5322 Message-ID) to a destination folder. Searches Message-ID and References headers. Use acrossFolders to also search Sent and All Mail.",
+    description: "Move all messages in a thread to a destination folder, identified by its RFC 5322 Message-ID header. Use when you have the raw Message-ID (e.g. from email headers) and want to move the full conversation. Prefer apply_thread_action with action 'move' when you have a local threadId from get_threads or get_actionable_threads.",
     annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
@@ -896,7 +896,7 @@ const TOOLS = [
   },
   {
     name: "delete_thread",
-    description: "Delete all messages in a thread. permanent:true permanently expunges; false moves to Trash. Use acrossFolders to search Sent and All Mail too.",
+    description: "Delete all messages in a thread, identified by RFC 5322 Message-ID header. permanent:true permanently expunges; false moves to Trash. Use when you have the raw Message-ID. Prefer apply_thread_action with action 'trash' or 'delete' when you have a local threadId from get_threads or get_actionable_threads.",
     annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
@@ -912,7 +912,7 @@ const TOOLS = [
   },
   {
     name: "flag_thread",
-    description: "Add or remove IMAP flags across all messages in a thread. Use to mark an entire conversation read, starred, etc. in one operation.",
+    description: "Add or remove IMAP flags across all messages in a thread, identified by RFC 5322 Message-ID header. Use when you have the raw Message-ID and want to flag an entire conversation at once. Prefer apply_thread_action with action 'mark_read', 'mark_unread', 'star', or 'unstar' when you have a local threadId from get_threads.",
     annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
