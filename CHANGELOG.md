@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented here.
 
+## [1.13.6] - 2026-06-09
+
+### Security
+- **HIGH**: `get_attachment_content` `saveTo` now validates the real filesystem target after creating parent directories, closing a symlink escape path from the allowed download directory.
+- **MEDIUM**: Markdown link rendering now only permits `http:`, `https:`, and `mailto:` URLs, replacing unsafe schemes such as `javascript:` with `#`.
+- **MEDIUM**: Email address validation now rejects percent-encoded controls, non-ASCII characters, and malformed domains before values reach SMTP header construction.
+- **MEDIUM**: Local indexed `subject` and `senderDomain` searches now escape SQLite `LIKE` metacharacters with an explicit escape clause.
+- **MEDIUM**: Thread snapshot label searches now escape SQLite `LIKE` metacharacters for both folder and `labels_json` matching.
+
+### Reliability
+- **HIGH**: Folder sync planning now detects server UID-space resets when the highest known UID moves backward and forces a full sync window instead of reusing stale UIDs.
+- **LOW**: `get_email_by_id` body truncation now slices by Unicode code point so surrogate pairs are not split.
+- **LOW**: Attachment output path validation now reports a missing parent output directory instead of crashing while resolving a nonexistent target.
+- **LOW**: Snapshot UID cleanup now creates and uses the temporary UID table inside the same SQLite transaction.
+- **LOW**: Multi-label IMAP COPY operations now return `failedLabels` when one or more label additions fail after earlier labels were applied.
+- **MEDIUM**: Thread-related sender domain searches now use the same escaped `LIKE` handling as other indexed sender domain filters.
+
 ## [1.13.5] — 2026-06-09
 
 ### Security

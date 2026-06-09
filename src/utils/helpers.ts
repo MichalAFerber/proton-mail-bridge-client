@@ -6,7 +6,7 @@ import type {
   SearchEmailsInput,
 } from "../types/index.js";
 
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
 const EMAIL_ID_SEPARATOR = "::";
 
 export function parseEmails(value?: string): string[] {
@@ -583,7 +583,10 @@ export function renderMarkdown(markdown: string): { html: string; text: string }
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/\*(.+?)\*/g, "<em>$1</em>")
     .replace(/~~(.+?)~~/g, "<del>$1</del>")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => {
+      const safeUrl = /^(https?:|mailto:)/i.test((url as string).trim()) ? url : "#";
+      return `<a href="${safeUrl}">${text}</a>`;
+    });
 
   // Restore protected blocks
   for (let i = 0; i < codeBlocks.length; i++) {

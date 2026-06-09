@@ -3623,8 +3623,11 @@ export function createServer(
           let displayBody = preferHtml
             ? (typeof detail.html === "string" ? detail.html : detail.text ?? "")
             : (detail.text ?? "");
-          if (maxBodyLength && displayBody.length > maxBodyLength) {
-            displayBody = displayBody.slice(0, maxBodyLength) + `\n[truncated at ${maxBodyLength} chars]`;
+          if (maxBodyLength) {
+            const codepoints = [...displayBody];
+            if (codepoints.length > maxBodyLength) {
+              displayBody = codepoints.slice(0, maxBodyLength).join("") + `\n[truncated at ${maxBodyLength} chars]`;
+            }
           }
 
           const output: Record<string, unknown> = { ...detail, text: displayBody };
@@ -4803,7 +4806,8 @@ export function createServer(
             if (!downloadDir) {
               throw new McpError(ErrorCode.InvalidParams, "PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR env var is not set.");
             }
-            const { resolve: pathResolve, join: pathJoin } = await import("node:path");
+            const { resolve: pathResolve, join: pathJoin, dirname, basename, sep } = await import("node:path");
+            const { realpathSync } = await import("node:fs");
             const { writeFile: wf, mkdir: mkd } = await import("node:fs/promises");
             const absDir = pathResolve(downloadDir);
             const absTarget = pathJoin(absDir, saveTo);
@@ -4811,6 +4815,24 @@ export function createServer(
               throw new McpError(ErrorCode.InvalidParams, "saveTo path escapes the allowed directory.");
             }
             await mkd(pathResolve(absTarget, ".."), { recursive: true });
+            let realTarget: string;
+            try {
+              realTarget = realpathSync(absTarget);
+            } catch (error) {
+              if (
+                error &&
+                typeof error === "object" &&
+                "code" in error &&
+                (error as { code?: string }).code === "ENOENT"
+              ) {
+                realTarget = realpathSync(dirname(absTarget)) + sep + basename(absTarget);
+              } else {
+                throw error;
+              }
+            }
+            if (!realTarget.startsWith(absDir + "/") && realTarget !== absDir) {
+              throw new McpError(ErrorCode.InvalidParams, "saveTo path escapes the allowed directory.");
+            }
             const buf = Buffer.from(result.base64, "base64");
             await wf(absTarget, buf);
             return createTextResult({ saved: true, path: absTarget, bytes: buf.length, filename: result.attachment?.filename });

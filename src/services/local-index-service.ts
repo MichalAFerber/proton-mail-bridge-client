@@ -86,6 +86,10 @@ const DB_SCHEMA_VERSION = 3;
 const STALE_THRESHOLD_MINUTES = 60;
 const DEFAULT_SNAPSHOT_LIMIT = 5000;
 
+function escapeLike(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
 interface SnapshotLoadOptions {
   limit?: number;
   offset?: number;
@@ -1259,23 +1263,6 @@ export class LocalIndexService {
         uid INTEGER PRIMARY KEY
       )
     `);
-    createSnapshotUidTable.run();
-    const clearSnapshotUidTable = db.prepare(`DELETE FROM temp_snapshot_uids`);
-    const insertSnapshotUid = db.prepare(`INSERT OR IGNORE INTO temp_snapshot_uids(uid) VALUES (?)`);
-    const deleteExpungedFts = db.prepare(`
-      DELETE FROM messages_fts
-      WHERE email_id IN (
-        SELECT email_id
-        FROM messages
-        WHERE folder = ?
-          AND uid NOT IN (SELECT uid FROM temp_snapshot_uids)
-      )
-    `);
-    const deleteExpungedMessages = db.prepare(`
-      DELETE FROM messages
-      WHERE folder = ?
-        AND uid NOT IN (SELECT uid FROM temp_snapshot_uids)
-    `);
 
     const transaction = db.transaction(() => {
       setMetadata.run("schemaVersion", String(DB_SCHEMA_VERSION));
@@ -1384,6 +1371,22 @@ export class LocalIndexService {
 
       if (cleanupExpunged) {
         createSnapshotUidTable.run();
+        const clearSnapshotUidTable = db.prepare(`DELETE FROM temp_snapshot_uids`);
+        const insertSnapshotUid = db.prepare(`INSERT OR IGNORE INTO temp_snapshot_uids(uid) VALUES (?)`);
+        const deleteExpungedFts = db.prepare(`
+          DELETE FROM messages_fts
+          WHERE email_id IN (
+            SELECT email_id
+            FROM messages
+            WHERE folder = ?
+              AND uid NOT IN (SELECT uid FROM temp_snapshot_uids)
+          )
+        `);
+        const deleteExpungedMessages = db.prepare(`
+          DELETE FROM messages
+          WHERE folder = ?
+            AND uid NOT IN (SELECT uid FROM temp_snapshot_uids)
+        `);
         const uidsByFullSyncFolder = new Map<string, Set<number>>();
         for (const folderStat of input.folderStats) {
           if (folderStat.strategy === "full") {
@@ -1591,12 +1594,12 @@ export class LocalIndexService {
       params.push(filters.hasAttachment ? 1 : 0);
     }
     if (filters.subject) {
-      conditions.push(`LOWER(subject) LIKE ?`);
-      params.push(`%${filters.subject.toLowerCase()}%`);
+      conditions.push(`LOWER(subject) LIKE ? ESCAPE '\\'`);
+      params.push(`%${escapeLike(filters.subject.toLowerCase())}%`);
     }
     if (filters.senderDomain) {
-      conditions.push(`LOWER(from_json) LIKE ?`);
-      params.push(`%${filters.senderDomain.toLowerCase()}%`);
+      conditions.push(`LOWER(from_json) LIKE ? ESCAPE '\\'`);
+      params.push(`%${escapeLike(filters.senderDomain.toLowerCase())}%`);
     }
     if (filters.threadId) {
       conditions.push(`thread_id = ?`);
@@ -1706,8 +1709,8 @@ export class LocalIndexService {
       messageParams.push(options.folder);
     }
     if (options.label) {
-      const labelNeedle = options.label.toLowerCase();
-      messageConditions.push(`(LOWER(folder) LIKE ? OR LOWER(labels_json) LIKE ?)`);
+      const labelNeedle = escapeLike(options.label.toLowerCase());
+      messageConditions.push(`(LOWER(folder) LIKE ? ESCAPE '\\' OR LOWER(labels_json) LIKE ? ESCAPE '\\')`);
       messageParams.push(`%${labelNeedle}%`, `%${labelNeedle}%`);
     }
     if (typeof options.isRead === "boolean") {

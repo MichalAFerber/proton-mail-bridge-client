@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { ImapFlow, type FetchMessageObject, type ListResponse, type SearchObject } from "imapflow";
 import { simpleParser, type ParsedMail } from "mailparser";
 import type {
@@ -164,6 +164,17 @@ export function planFolderSync(input: {
     return {
       folder: input.folder,
       strategy: "recent",
+      changed: true,
+      startUid: Math.max(1, highestKnownUid - input.limit + 1),
+      endUid: highestKnownUid,
+      highestKnownUid,
+    };
+  }
+
+  if (highestKnownUid < (input.checkpoint?.highestUid ?? 0)) {
+    return {
+      folder: input.folder,
+      strategy: "full",
       changed: true,
       startUid: Math.max(1, highestKnownUid - input.limit + 1),
       endUid: highestKnownUid,
@@ -931,11 +942,12 @@ export class SimpleIMAPService {
     emailId: string,
     labelsToAdd: string[],
     labelsToRemove: string[],
-  ): Promise<{ emailId: string; added: string[]; removed: string[]; notFound: string[] }> {
+  ): Promise<{ emailId: string; added: string[]; removed: string[]; notFound: string[]; failedLabels?: string[] }> {
     const { folder, uid } = parseEmailId(emailId);
     const added: string[] = [];
     const removed: string[] = [];
     const notFound: string[] = [];
+    const failedLabels: string[] = [];
 
     // Retrieve the Message-ID header once (needed for label removal lookup)
     let messageId: string | undefined;
@@ -959,6 +971,7 @@ export class SimpleIMAPService {
         added.push(labelFolder);
       } catch {
         notFound.push(labelFolder);
+        failedLabels.push(labelFolder);
       }
     }
 
@@ -989,7 +1002,7 @@ export class SimpleIMAPService {
       }
     }
 
-    return { emailId, added, removed, notFound };
+    return { emailId, added, removed, notFound, failedLabels: failedLabels.length > 0 ? failedLabels : undefined };
   }
 
   async updateMessageFlags(
@@ -2385,7 +2398,11 @@ export class SimpleIMAPService {
         "code" in error &&
         (error as { code?: string }).code === "ENOENT"
       ) {
-        targetRealPath = realpathSync(dirname(targetPath));
+        try {
+          targetRealPath = realpathSync(dirname(targetPath)) + sep + basename(targetPath);
+        } catch {
+          throw new Error(`Output directory does not exist: ${dirname(targetPath)}`);
+        }
       } else {
         throw error;
       }
