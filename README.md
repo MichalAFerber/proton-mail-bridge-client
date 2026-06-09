@@ -1,7 +1,5 @@
 # Proton Mail Bridge Client
 
-[![proton-mail-bridge-client MCP server](https://glama.ai/mcp/servers/googlarz/proton-mail-bridge-client/badges/card.svg)](https://glama.ai/mcp/servers/googlarz/proton-mail-bridge-client)
-
 A full-featured MCP server and CLI for Proton Mail — built on Proton Bridge, runs entirely on your machine.
 
 **Claude Desktop, Cline, and any MCP-compatible client** get 40+ tools: read, search, send, draft, triage threads, manage folders, save attachments, and more. **The CLI** exposes the same surface in the terminal for scripting, cron, and piped automation — no Claude required.
