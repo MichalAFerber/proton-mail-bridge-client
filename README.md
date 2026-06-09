@@ -1,12 +1,24 @@
-# Proton Mail Bridge Client
+<div align="center">
 
-A full-featured MCP server and CLI for Proton Mail — built on Proton Bridge, runs entirely on your machine.
+```
+  ____  ____   ___ _____ ___  _   _   __  __    _    ___ _
+ |  _ \|  _ \ / _ \_   _/ _ \| \ | | |  \/  |  / \  |_ _| |
+ | |_) | |_) | | | || || | | |  \| | | |\/| | / _ \  | || |
+ |  __/|  _ <| |_| || || |_| | |\  | | |  | |/ ___ \ | || |___
+ |_|   |_| \_\\___/ |_| \___/|_| \_| |_|  |_/_/   \_\___|_____|
+```
 
-**Claude Desktop, Cline, and any MCP-compatible client** get 40+ tools: read, search, send, draft, triage threads, manage folders, save attachments, and more. **The CLI** exposes the same surface in the terminal for scripting, cron, and piped automation — no Claude required.
+### MCP server + CLI for Proton Mail
 
-No hosted relay. No remote URL. Everything goes through Proton Bridge on your own machine.
+**Read · Search · Send · Draft · Triage · Archive · Automate**
+
+*Runs entirely on your machine through Proton Bridge — no hosted relay, no cloud dependency*
+
+</div>
 
 ---
+
+Give Claude Desktop (or Cline, or any MCP client) full access to your Proton Mail inbox: read, search, send, draft, triage threads, manage folders, save attachments, and more. The same 40+ capabilities are also available as a full CLI for scripting, cron, and piped automation — no Claude required.
 
 ## What you get
 
