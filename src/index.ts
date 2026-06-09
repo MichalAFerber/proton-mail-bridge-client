@@ -784,7 +784,7 @@ const TOOLS = [
   },
   {
     name: "empty_folder",
-    description: "Permanently delete ALL messages in a folder. This action is irreversible. Only available when PROTONMAIL_ALLOW_EMPTY_FOLDER=true. Use with caution — typically for Trash or Spam cleanup. Returns the number of messages deleted.",
+    description: "Permanently delete ALL messages in a folder at once. Use only when the goal is to clear an entire folder (e.g. emptying Trash or Spam). Only available when PROTONMAIL_ALLOW_EMPTY_FOLDER=true. Irreversible. Prefer bulk_delete when removing a subset of messages rather than everything in the folder.",
     annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
@@ -814,7 +814,7 @@ const TOOLS = [
   },
   {
     name: "bulk_delete",
-    description: "Delete multiple emails in one pass. Accepts emailIds[] OR match criteria (XOR). permanent:true permanently expunges; false moves to Trash. Use dryRun to preview.",
+    description: "Delete multiple emails by explicit ID list or by search criteria (from/subject/date/flags). Use when you have specific IDs to delete or want to filter by sender, subject, or date range. Accepts emailIds[] OR match criteria (XOR). permanent:true permanently expunges; false moves to Trash. Use dryRun to preview. Prefer empty_folder to clear an entire folder. Prefer delete_email for a single message. Prefer batch_email_action when the same set of IDs needs a mix of actions, not just deletion.",
     annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
@@ -940,7 +940,7 @@ const TOOLS = [
   },
   {
     name: "batch_email_action",
-    description: "Apply a mailbox action to multiple emails in a single IMAP pass. Actions: mark_read, mark_unread, star, unstar, archive, trash, restore, move (requires targetFolder), delete (permanent expunge — use with care). Supports dryRun to preview impact before mutating. Prefer apply_thread_action when acting by threadId rather than individual email ids.",
+    description: "Apply one action to a known list of email IDs in a single IMAP pass. Use when you already have the IDs and want to archive, trash, move, mark-read/unread, star/unstar, restore, or permanently delete them. Actions: mark_read, mark_unread, star, unstar, archive, trash, restore, move (requires targetFolder), delete (permanent expunge). Supports dryRun. Prefer bulk_delete when selecting messages by search criteria (from/subject/date) rather than by ID. Prefer apply_thread_action when acting on a thread by threadId. Prefer empty_folder to clear an entire folder.",
     annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
