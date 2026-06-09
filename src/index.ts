@@ -26,6 +26,7 @@ import type {
   BatchActionEntry,
   BatchActionResult,
   BulkMatchCriteria,
+  BulkOperationResult,
   CitationSource,
   DraftRecord,
   EmailAction,
@@ -465,6 +466,7 @@ const TOOLS = [
       properties: {
         draftId: { type: "string", description: "Draft id returned by create_draft, list_drafts, or a create_*_draft call." },
         confirmed: { type: "boolean", description: "Set to true to confirm this irreversible send when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
+        dryRun: { type: "boolean", description: "Preview recipients and draft content without sending. Returns what would be sent." },
       },
       required: ["draftId"],
     },
@@ -483,7 +485,7 @@ const TOOLS = [
   },
   {
     name: "get_emails",
-    description: "Fetch emails from a mailbox folder via live IMAP, returned newest first. Use to browse or paginate recent messages in a specific folder. Prefer search_emails to filter by sender, subject, or date. Prefer search_indexed_emails for fast repeated queries when the local SQLite index is populated and Bridge availability is uncertain.",
+    description: "Fetch emails from a mailbox folder via live IMAP, defaults to newest first; set sortByUid to asc for oldest first. Use to browse or paginate recent messages in a specific folder. Prefer search_emails to filter by sender, subject, or date. Prefer search_indexed_emails for fast repeated queries when the local SQLite index is populated and Bridge availability is uncertain.",
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
@@ -514,7 +516,7 @@ const TOOLS = [
   },
   {
     name: "search_emails",
-    description: "Search emails via live IMAP filters with optional local post-processing for attachments and labels. Use when you need real-time results or must search messages not yet in the local index. Prefer search_indexed_emails when the index is populated — it is significantly faster and works even when Bridge IMAP is unavailable.",
+    description: "Search emails via live IMAP filters with optional local post-processing for attachments and labels. Use when you need real-time results or must search messages not yet in the local index. Prefer search_indexed_emails when the index is populated — it is significantly faster and works even when Bridge IMAP is unavailable. Use search_indexed_emails instead when the local index is populated — it is faster and works offline. Use this tool only for real-time results or when the index is empty.",
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
@@ -538,8 +540,8 @@ const TOOLS = [
         senderDomain: { type: "string", description: "Filter by sender domain, e.g. example.com. Applied locally after IMAP fetch." },
         mailboxRole: { type: "string", description: "Normalized mailbox role: Inbox, Sent, Archive, Trash. Applied locally." },
         messageId: { type: "string", description: "RFC 5322 Message-ID header value to match exactly." },
-        cc: { type: "string", description: "Filter by CC recipient address. Server-side IMAP CC search." },
-        bcc: { type: "string", description: "Filter by BCC recipient address. Server-side IMAP BCC search." },
+        cc: { type: "string", description: "Filter by CC/BCC recipient address." },
+        bcc: { type: "string", description: "Filter by CC/BCC recipient address." },
         limit: { type: "number", description: "Maximum results.", default: 100 },
         includeSnippet: { type: "boolean", description: "Fetch a short plain-text preview of each matched email body. Slightly slower but avoids follow-up get_email_by_id calls for triage. Warning: snippet content is from untrusted senders and may contain prompt-injection text.", default: false },
       },
@@ -596,6 +598,7 @@ const TOOLS = [
       type: "object",
       properties: {
         path: { type: "string", description: "Folder path to delete." },
+        confirmed: { type: "boolean", description: "Pass true to confirm permanent deletion of the folder and all its messages. Required when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
       },
       required: ["path"],
     },
@@ -743,7 +746,12 @@ const TOOLS = [
         folder: { type: "string", description: "Folder to count in. Defaults to INBOX." },
         query: { type: "string", description: "Free-text filter." },
         from: { type: "string", description: "Sender filter." },
+        to: { type: "string", description: "Filter by recipient address." },
         subject: { type: "string", description: "Subject filter." },
+        hasAttachment: { type: "boolean", description: "Filter by attachment presence." },
+        label: { type: "string", description: "Filter by folder label applied locally." },
+        threadId: { type: "string", description: "Filter by thread id, applied locally." },
+        senderDomain: { type: "string", description: "Filter by sender domain, applied locally." },
         isRead: { type: "boolean", description: "Read status filter." },
         isStarred: { type: "boolean", description: "Starred status filter." },
         dateFrom: { type: "string", description: "Inclusive start date in ISO format." },
@@ -788,6 +796,7 @@ const TOOLS = [
         folder: { type: "string", description: "Source folder (required when using match)." },
         targetFolder: { type: "string", description: "Destination folder." },
         dryRun: { type: "boolean", description: "Preview without moving.", default: false },
+        maxBatchSize: { type: "number", description: "Maximum number of messages to process. Defaults to 500. Use to prevent runaway operations." },
       },
       required: ["targetFolder"],
     },
@@ -805,6 +814,7 @@ const TOOLS = [
         permanent: { type: "boolean", description: "Permanently expunge (irreversible). False = move to Trash.", default: false },
         dryRun: { type: "boolean", default: false },
         confirmed: { type: "boolean", description: "Required when permanent:true and PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
+        maxBatchSize: { type: "number", description: "Maximum number of messages to process. Defaults to 500. Use to prevent runaway operations." },
       },
     },
   },
@@ -821,6 +831,7 @@ const TOOLS = [
         flagsToAdd: { type: "array", items: { type: "string" }, description: 'IMAP flags to set, e.g. ["\\\\Seen", "\\\\Flagged"].' },
         flagsToRemove: { type: "array", items: { type: "string" }, description: "IMAP flags to clear." },
         dryRun: { type: "boolean", default: false },
+        maxBatchSize: { type: "number", description: "Maximum number of messages to process. Defaults to 500. Use to prevent runaway operations." },
       },
     },
   },
@@ -837,12 +848,13 @@ const TOOLS = [
         labelsToAdd: { type: "array", items: { type: "string" }, description: 'Labels to add, e.g. ["Labels/Work"].' },
         labelsToRemove: { type: "array", items: { type: "string" }, description: "Labels to remove." },
         dryRun: { type: "boolean", default: false },
+        maxBatchSize: { type: "number", description: "Maximum number of messages to process. Defaults to 500. Use to prevent runaway operations." },
       },
     },
   },
   {
     name: "top_senders",
-    description: "Return a frequency table of the top senders in a folder over a date range. Keyed by email address to defeat display-name spoofing. Use for inbox analytics, unsubscribe triage, and contact discovery.",
+    description: "Return a frequency table of the top senders in a folder over a date range. Keyed on the sender address, not the display name, so display-name spoofing does not conflate different senders. Use for inbox analytics, unsubscribe triage, and contact discovery.",
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
@@ -966,11 +978,11 @@ const TOOLS = [
         threadId: { type: "string", description: "Thread id from get_threads or get_actionable_threads." },
         action: {
           type: "string",
-          enum: ["mark_read", "mark_unread", "star", "unstar", "archive", "trash", "restore"],
+          enum: ["mark_read", "mark_unread", "star", "unstar", "archive", "trash", "restore", "move", "delete"],
         },
         targetFolder: {
           type: "string",
-          description: "Optional restore destination. Used only when action is restore.",
+          description: "Required when action is move.",
         },
         unreadOnly: {
           type: "boolean",
@@ -1000,13 +1012,25 @@ const TOOLS = [
     name: "get_email_stats",
     description: "Return aggregate mailbox statistics: folder message counts, total unread counts, and a brief analytics sample. Use for a quick mailbox health overview. Prefer get_email_analytics for richer breakdowns such as top senders and hourly patterns. Prefer get_volume_trends for time-series daily volume data.",
     annotations: { readOnlyHint: true },
-    inputSchema: { type: "object", properties: {} },
+    inputSchema: {
+      type: "object",
+      properties: {
+        days: { type: "number", description: "Trailing days window.", default: 30 },
+        limit: { type: "number", description: "Maximum messages to sample.", default: 100 },
+      },
+    },
   },
   {
     name: "get_email_analytics",
     description: "Generate sampled mailbox analytics including top senders, busiest hours of day, and volume breakdown by folder. Use for productivity insights and communication pattern analysis. Prefer get_email_stats for a fast aggregate count summary. Prefer get_volume_trends for per-day message volume history.",
     annotations: { readOnlyHint: true },
-    inputSchema: { type: "object", properties: {} },
+    inputSchema: {
+      type: "object",
+      properties: {
+        days: { type: "number", description: "Trailing days window.", default: 30 },
+        limit: { type: "number", description: "Maximum messages to sample.", default: 100 },
+      },
+    },
   },
   {
     name: "get_contacts",
@@ -1107,7 +1131,7 @@ const TOOLS = [
   {
     name: "search_indexed_emails",
     description:
-      "Search the local SQLite mailbox index without making any IMAP connection. Supports free-text and field shortcuts inline: from:alice@example.com, to:bob, subject:invoice, label:Archive, domain:acme.com. Use for fast, offline-capable searches when the index is populated. Prefer search_emails when you need live IMAP results or when the index is stale or empty.",
+      "Search the local SQLite mailbox index without making any IMAP connection. Supports free-text and field shortcuts inline: from:alice@example.com, to:bob, subject:invoice, label:Archive, domain:acme.com. Use for fast, offline-capable searches when the index is populated. Prefer search_emails when you need live IMAP results or when the index is stale or empty. Prefer this over search_emails when the index is current. Use search_emails if messages were received after the last sync.",
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
@@ -1368,7 +1392,7 @@ const TOOLS = [
         emailId: { type: "string", description: "Composite email id in FOLDER::UID format, as returned by get_emails or search_emails." },
         attachmentId: { type: "string", description: "Stable attachment id returned by list_attachments." },
         includeBase64: { type: "boolean", description: "Include base64 payload in the response.", default: false },
-        saveTo: { type: "string", description: "Relative path within PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR to save attachment to disk. Returns file path and size instead of inline base64. Requires env var to be set. Use PROTONMAIL_MAX_INLINE_BYTES to configure the inline size limit (default 40KB)." },
+        saveTo: { type: "string", description: "Relative path within PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR to save attachment to disk. Returns file path and size instead of inline base64. Requires env var to be set. Set PROTONMAIL_MAX_INLINE_BYTES (in KB, default 40) to configure the inline size threshold." },
       },
       required: ["emailId", "attachmentId"],
     },
@@ -1397,7 +1421,7 @@ const TOOLS = [
         emailId: { type: "string", description: "Composite email id in FOLDER::UID format, as returned by get_emails or search_emails." },
         attachmentId: { type: "string", description: "Stable attachment id returned by list_attachments." },
         outputPath: { type: "string", description: "Optional file or directory path to write to." },
-        saveTo: { type: "string", description: "Relative path within PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR to save attachment to disk. Returns file path and size instead of inline base64. Requires env var to be set." },
+        saveTo: { type: "string", description: "Relative path within PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR to save attachment to disk. Returns file path and size instead of inline base64. Requires env var to be set. Set PROTONMAIL_MAX_INLINE_BYTES (in KB, default 40) to configure the inline size threshold." },
       },
       required: ["emailId", "attachmentId"],
     },
@@ -1405,13 +1429,13 @@ const TOOLS = [
   {
     name: "clear_cache",
     description: "Evict all in-memory caches: folder list, message metadata, and analytics data. Use when cached data appears stale after external mailbox changes (e.g. folders modified via Proton webmail). Does NOT affect the persistent SQLite index — use clear_index for that.",
-    annotations: { destructiveHint: false },
+    annotations: { destructiveHint: true },
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "clear_index",
     description: "Delete the entire persistent SQLite mailbox index from disk. Use only to reset a corrupted or schema-incompatible index. After clearing, call sync_emails to rebuild. Irreversible — all indexed metadata and search history is lost. Does NOT clear in-memory caches — use clear_cache for that.",
-    annotations: { destructiveHint: false },
+    annotations: { destructiveHint: true },
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -1423,6 +1447,7 @@ const TOOLS = [
       properties: {
         level: { type: "string", enum: ["debug", "info", "warn", "error"] },
         limit: { type: "number", default: 100 },
+        offset: { type: "number", description: "Number of records to skip for pagination.", default: 0 },
       },
     },
   },
@@ -1434,6 +1459,7 @@ const TOOLS = [
       type: "object",
       properties: {
         limit: { type: "number", default: 100 },
+        offset: { type: "number", description: "Number of records to skip for pagination.", default: 0 },
       },
     },
   },
@@ -1620,6 +1646,8 @@ function requireEmailAction(args: Record<string, unknown>, key = "action"): Emai
     case "archive":
     case "trash":
     case "restore":
+    case "move":
+    case "delete":
       return value;
     default:
       throw new McpError(ErrorCode.InvalidParams, `${key} must be a supported email action.`);
@@ -2256,6 +2284,85 @@ async function previewEmailAction(
   };
 }
 
+async function verifySentCopy(
+  imapService: SimpleIMAPService,
+  messageId: string,
+): Promise<{ found: boolean; uid?: number }> {
+  const resolver = (imapService as unknown as { resolveSentFolder?: () => Promise<string | undefined> }).resolveSentFolder;
+  const resolved = await resolver?.();
+  if (resolved) {
+    return imapService.sentCopyVerify(messageId, resolved, 30_000);
+  }
+
+  let lastResult: { found: boolean; uid?: number } = { found: false };
+  for (const sentFolderName of ["Sent", "Sent Mail", "Sent Messages"]) {
+    lastResult = await imapService.sentCopyVerify(messageId, sentFolderName, 30_000);
+    if (lastResult.found) {
+      return lastResult;
+    }
+  }
+  return lastResult;
+}
+
+function getBulkMaxBatchSize(args: Record<string, unknown>): number {
+  return typeof args.maxBatchSize === "number" ? Math.min(args.maxBatchSize, 2000) : 500;
+}
+
+function ensureBulkBatchSize(uidsLength: number, max: number): void {
+  if (uidsLength > max) {
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      "Batch size " + uidsLength + " exceeds limit " + max + ". Use match criteria to narrow the scope, or increase maxBatchSize.",
+    );
+  }
+}
+
+function getBulkNotFoundEmailIds(emailIds: string[] | undefined, folder: string): string[] {
+  if (!emailIds) {
+    return [];
+  }
+
+  return emailIds.filter((emailId) => {
+    const separator = emailId.lastIndexOf("::");
+    if (separator <= 0 || separator === emailId.length - 2) {
+      return true;
+    }
+    const uid = Number.parseInt(emailId.slice(separator + 2), 10);
+    return emailId.slice(0, separator) !== folder || Number.isNaN(uid);
+  });
+}
+
+function withBulkNotFound(
+  result: BulkOperationResult,
+  notFoundEmailIds: string[],
+): BulkOperationResult {
+  if (notFoundEmailIds.length === 0) {
+    return result;
+  }
+
+  return {
+    ...result,
+    total: result.total + notFoundEmailIds.length,
+    notFound: result.notFound + notFoundEmailIds.length,
+    results: [
+      ...result.results,
+      ...notFoundEmailIds.map((emailId) => ({
+        uid: 0,
+        emailId,
+        ok: false,
+        error: "Email ID could not be resolved to a UID.",
+      })),
+    ],
+  };
+}
+
+function paginateRecentRecords<T>(records: T[], limit: number, offset: number): T[] {
+  if (offset <= 0) {
+    return records;
+  }
+  return records.slice(0, Math.max(0, records.length - offset)).slice(-limit);
+}
+
 function pickReplyTargetFromThread(
   thread: Awaited<ReturnType<LocalIndexService["getThreadById"]>>,
   ownerEmail: string,
@@ -2431,12 +2538,13 @@ export function buildConfigFromEnv(): ProtonMailConfig {
   const allowFileDownloadDir = process.env.PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR?.trim() || undefined;
   const imapUsername = process.env.PROTONMAIL_IMAP_USERNAME?.trim() || username;
   const imapPassword = process.env.PROTONMAIL_IMAP_PASSWORD?.trim() || password;
+  const opDelayMs = parseIntegerEnv("PROTONMAIL_OP_DELAY_MS", 0, 0, 5000);
 
   logger.setDebugMode(debug);
 
   return {
     smtp: {
-      host: process.env.PROTONMAIL_SMTP_HOST || "smtp.protonmail.ch",
+      host: process.env.PROTONMAIL_SMTP_HOST || "127.0.0.1",
       port: smtpPort,
       secure: smtpPort === 465,
       username,
@@ -2471,6 +2579,7 @@ export function buildConfigFromEnv(): ProtonMailConfig {
       restrictOutboundToSelf,
       allowFileDownloadDir,
       maxInlineBytes: parseIntegerEnv("PROTONMAIL_MAX_INLINE_BYTES", 40, 1, 10240),
+      opDelayMs,
     },
   };
 }
@@ -2482,7 +2591,7 @@ export function createServer(
   } = {},
 ) {
   const smtpService = new SMTPService(config);
-  const imapService = new SimpleIMAPService(config, logger);
+  const imapService = new SimpleIMAPService(config, logger, config.runtime.opDelayMs);
   const analyticsService = new AnalyticsService();
   const auditService = new AuditService(config);
   const localIndexService = new LocalIndexService(config, logger);
@@ -2712,7 +2821,7 @@ export function createServer(
           try {
             const verifyMsgId = result.messageId;
             if (verifyMsgId) {
-              const scv = await imapService.sentCopyVerify(verifyMsgId, "Sent", 30_000);
+              const scv = await verifySentCopy(imapService, verifyMsgId);
               if (scv.found) sentCopyTokenSend = "[sent-copy:verified]";
             }
           } catch (_) {}
@@ -2808,7 +2917,7 @@ export function createServer(
           try {
             const verifyMsgId = result.messageId;
             if (verifyMsgId) {
-              const scv = await imapService.sentCopyVerify(verifyMsgId, "Sent", 30_000);
+              const scv = await verifySentCopy(imapService, verifyMsgId);
               if (scv.found) sentCopyTokenReply = "[sent-copy:verified]";
             }
           } catch (_) {}
@@ -2887,7 +2996,7 @@ export function createServer(
           try {
             const verifyMsgId = resultRa.messageId;
             if (verifyMsgId) {
-              const scv = await imapService.sentCopyVerify(verifyMsgId, "Sent", 30_000);
+              const scv = await verifySentCopy(imapService, verifyMsgId);
               if (scv.found) sentCopyTokenRa = "[sent-copy:verified]";
             }
           } catch (_) {}
@@ -2957,7 +3066,7 @@ export function createServer(
           try {
             const verifyMsgId = result.messageId;
             if (verifyMsgId) {
-              const scv = await imapService.sentCopyVerify(verifyMsgId, "Sent", 30_000);
+              const scv = await verifySentCopy(imapService, verifyMsgId);
               if (scv.found) sentCopyTokenFwd = "[sent-copy:verified]";
             }
           } catch (_) {}
@@ -3339,6 +3448,23 @@ export function createServer(
           if (draft.replyTo && !isValidEmail(draft.replyTo)) {
             throw new McpError(ErrorCode.InvalidParams, "replyTo must be a valid email address.");
           }
+          if (config.runtime.restrictOutboundToSelf) {
+            const allRecipients = [...draft.to, ...draft.cc, ...draft.bcc];
+            const selfAddr = config.imap.username.toLowerCase();
+            const external = allRecipients.filter(r => r.toLowerCase() !== selfAddr);
+            if (external.length > 0) throw new McpError(ErrorCode.InvalidParams, "PROTONMAIL_RESTRICT_OUTBOUND_TO_SELF is enabled. All recipients must be the authenticated user.");
+          }
+
+          if (normalizeBoolean(args.dryRun, false)) {
+            return createTextResult({
+              dryRun: true,
+              wouldSendTo: { to: draft.to, cc: draft.cc, bcc: draft.bcc },
+              subject: draft.subject,
+              body: draft.body,
+              isHtml: draft.isHtml,
+              note: "No email was sent.",
+            }, false, [draftSource(draft)]);
+          }
 
           const result = await withAudit(auditService, name, args, async () =>
             smtpService.sendEmail({
@@ -3385,7 +3511,7 @@ export function createServer(
           try {
             const verifyMsgId = result.messageId;
             if (verifyMsgId) {
-              const scv = await imapService.sentCopyVerify(verifyMsgId, "Sent", 30_000);
+              const scv = await verifySentCopy(imapService, verifyMsgId);
               if (scv.found) sentCopyTokenDraft = "[sent-copy:verified]";
             }
           } catch (_) {}
@@ -3434,6 +3560,8 @@ export function createServer(
             folder: optionalString(args, "folder"),
             limit: typeof args.limit === "number" ? args.limit : undefined,
             offset: typeof args.offset === "number" ? args.offset : undefined,
+            beforeUid: typeof args?.beforeUid === "number" ? args.beforeUid : undefined,
+            sortByUid: args?.sortByUid === "asc" || args?.sortByUid === "desc" ? args.sortByUid : undefined,
             includeSnippet: normalizeBoolean(args.includeSnippet, false),
           });
           return createTextResult(result, false, result.emails.map(emailSource));
@@ -3472,6 +3600,11 @@ export function createServer(
             threadId: optionalString(args, "threadId"),
             from: optionalString(args, "from"),
             to: optionalString(args, "to"),
+            senderDomain: optionalString(args, "senderDomain"),
+            mailboxRole: optionalString(args, "mailboxRole"),
+            messageId: optionalString(args, "messageId"),
+            cc: optionalString(args, "cc"),
+            bcc: optionalString(args, "bcc"),
             subject: optionalString(args, "subject"),
             hasAttachment:
               typeof args.hasAttachment === "boolean" ? args.hasAttachment : undefined,
@@ -3530,7 +3663,13 @@ export function createServer(
             folder: optionalString(args, "folder"),
             query: optionalString(args, "query"),
             from: optionalString(args, "from"),
+            to: optionalString(args, "to"),
             subject: optionalString(args, "subject"),
+            hasAttachment:
+              typeof args.hasAttachment === "boolean" ? args.hasAttachment : undefined,
+            label: optionalString(args, "label"),
+            threadId: optionalString(args, "threadId"),
+            senderDomain: optionalString(args, "senderDomain"),
             isRead: typeof args.isRead === "boolean" ? args.isRead : undefined,
             isStarred: typeof args.isStarred === "boolean" ? args.isStarred : undefined,
             dateFrom: optionalString(args, "dateFrom"),
@@ -3560,6 +3699,7 @@ export function createServer(
           const folder = requireString(args, "folder");
           const confirmed = normalizeBoolean(args.confirmed, false);
           if (!confirmed) {
+            ensureDestructiveConfirmed(config.runtime, confirmed, "Delete all messages in folder " + folder);
             const stats = await imapService.getFolderStats(folder);
             return createTextResult({
               preview: true,
@@ -3568,6 +3708,7 @@ export function createServer(
               message: `This would permanently delete ${stats.total} messages from "${folder}". Call again with confirmed:true to execute.`,
             });
           }
+          ensureDestructiveConfirmed(config.runtime, confirmed, "Delete all messages in folder " + folder);
           const result = await withAudit(auditService, name, args, async () =>
             imapService.emptyFolder(folder),
           );
@@ -3582,16 +3723,31 @@ export function createServer(
             ? (args.match as BulkMatchCriteria) : undefined;
           if (!emailIds && !match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds or match.");
           if (emailIds && match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds OR match, not both.");
+          const folder = optionalString(args, "folder") ?? "INBOX";
+          const targetFolder = requireString(args, "targetFolder");
+          const max = getBulkMaxBatchSize(args);
+          const notFoundEmailIds = getBulkNotFoundEmailIds(emailIds, folder);
+          const preview = await imapService.bulkMove({
+            emailIds,
+            match,
+            folder,
+            targetFolder,
+            dryRun: true,
+          });
+          ensureBulkBatchSize(preview.total, max);
+          if (normalizeBoolean(args.dryRun, false)) {
+            return createTextResult(withBulkNotFound(preview, notFoundEmailIds));
+          }
           const result = await withAudit(auditService, name, args, () =>
             imapService.bulkMove({
               emailIds,
               match,
-              folder: optionalString(args, "folder"),
-              targetFolder: requireString(args, "targetFolder"),
-              dryRun: normalizeBoolean(args.dryRun, false),
+              folder,
+              targetFolder,
+              dryRun: false,
             })
           );
-          return createTextResult(result);
+          return createTextResult(withBulkNotFound(result, notFoundEmailIds));
         }
 
         case "bulk_delete": {
@@ -3604,16 +3760,30 @@ export function createServer(
             ? (args.match as BulkMatchCriteria) : undefined;
           if (!emailIds && !match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds or match.");
           if (emailIds && match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds OR match, not both.");
+          const folder = optionalString(args, "folder") ?? "INBOX";
+          const max = getBulkMaxBatchSize(args);
+          const notFoundEmailIds = getBulkNotFoundEmailIds(emailIds, folder);
+          const preview = await imapService.bulkDelete({
+            emailIds,
+            match,
+            folder,
+            permanent,
+            dryRun: true,
+          });
+          ensureBulkBatchSize(preview.total, max);
+          if (normalizeBoolean(args.dryRun, false)) {
+            return createTextResult(withBulkNotFound(preview, notFoundEmailIds));
+          }
           const result = await withAudit(auditService, name, args, () =>
             imapService.bulkDelete({
               emailIds,
               match,
-              folder: optionalString(args, "folder"),
+              folder,
               permanent,
-              dryRun: normalizeBoolean(args.dryRun, false),
+              dryRun: false,
             })
           );
-          return createTextResult(result);
+          return createTextResult(withBulkNotFound(result, notFoundEmailIds));
         }
 
         case "bulk_update_flags": {
@@ -3627,10 +3797,18 @@ export function createServer(
           const flagsToAdd = Array.isArray(args.flagsToAdd) ? (args.flagsToAdd as unknown[]).map(String) : [];
           const flagsToRemove = Array.isArray(args.flagsToRemove) ? (args.flagsToRemove as unknown[]).map(String) : [];
           if (flagsToAdd.length === 0 && flagsToRemove.length === 0) throw new McpError(ErrorCode.InvalidParams, "Provide flagsToAdd or flagsToRemove.");
+          const folder = optionalString(args, "folder") ?? "INBOX";
+          const max = getBulkMaxBatchSize(args);
+          const notFoundEmailIds = getBulkNotFoundEmailIds(emailIds, folder);
+          const preview = await imapService.bulkUpdateFlags({ emailIds, match, folder, flagsToAdd, flagsToRemove, dryRun: true });
+          ensureBulkBatchSize(preview.total, max);
+          if (normalizeBoolean(args.dryRun, false)) {
+            return createTextResult(withBulkNotFound(preview, notFoundEmailIds));
+          }
           const result = await withAudit(auditService, name, args, () =>
-            imapService.bulkUpdateFlags({ emailIds, match, folder: optionalString(args, "folder"), flagsToAdd, flagsToRemove, dryRun: normalizeBoolean(args.dryRun, false) })
+            imapService.bulkUpdateFlags({ emailIds, match, folder, flagsToAdd, flagsToRemove, dryRun: false })
           );
-          return createTextResult(result);
+          return createTextResult(withBulkNotFound(result, notFoundEmailIds));
         }
 
         case "bulk_update_labels": {
@@ -3643,10 +3821,18 @@ export function createServer(
           if (emailIds && match) throw new McpError(ErrorCode.InvalidParams, "Provide emailIds OR match, not both.");
           const labelsToAdd = Array.isArray(args.labelsToAdd) ? (args.labelsToAdd as unknown[]).map(String) : [];
           const labelsToRemove = Array.isArray(args.labelsToRemove) ? (args.labelsToRemove as unknown[]).map(String) : [];
+          const folder = optionalString(args, "folder") ?? "INBOX";
+          const max = getBulkMaxBatchSize(args);
+          const notFoundEmailIds = getBulkNotFoundEmailIds(emailIds, folder);
+          const preview = await imapService.bulkUpdateLabels({ emailIds, match, folder, labelsToAdd, labelsToRemove, dryRun: true });
+          ensureBulkBatchSize(preview.total, max);
+          if (normalizeBoolean(args.dryRun, false)) {
+            return createTextResult(withBulkNotFound(preview, notFoundEmailIds));
+          }
           const result = await withAudit(auditService, name, args, () =>
-            imapService.bulkUpdateLabels({ emailIds, match, folder: optionalString(args, "folder"), labelsToAdd, labelsToRemove, dryRun: normalizeBoolean(args.dryRun, false) })
+            imapService.bulkUpdateLabels({ emailIds, match, folder, labelsToAdd, labelsToRemove, dryRun: false })
           );
-          return createTextResult(result);
+          return createTextResult(withBulkNotFound(result, notFoundEmailIds));
         }
 
         case "top_senders": {
@@ -3709,6 +3895,7 @@ export function createServer(
         case "create_label": {
           ensureMailboxWriteAllowed(config.runtime);
           const rawName = requireString(args, "name");
+          if (!rawName.trim()) throw new McpError(ErrorCode.InvalidParams, "Label name cannot be empty.");
           const labelPath = rawName.startsWith("Labels/") ? rawName : `Labels/${rawName}`;
           const result = await withAudit(auditService, name, args, () =>
             imapService.createFolder(labelPath)
@@ -3743,6 +3930,7 @@ export function createServer(
 
         case "delete_folder":
           ensureMailboxWriteAllowed(config.runtime);
+          ensureDestructiveConfirmed(config.runtime, normalizeBoolean(args?.confirmed, false), "Permanently delete folder and all messages in it: " + requireString(args, "path"));
           return createTextResult(
             await withAudit(auditService, name, args, async () =>
               imapService.deleteFolder(requireString(args, "path")),
@@ -3886,7 +4074,7 @@ export function createServer(
               action,
               targetFolder: optionalString(args, "targetFolder"),
               continueOnError: normalizeBoolean(args.continueOnError, true),
-              dryRun: normalizeBoolean(args.dryRun, false) || normalizeBoolean(args.preview, false),
+              dryRun: normalizeBoolean(args.dryRun, false),
             }),
           );
 
@@ -3898,14 +4086,20 @@ export function createServer(
 
         case "get_email_stats": {
           const folders = await imapService.getFolders();
-          const sample = await imapService.getAnalyticsSample(30, 100);
+          const sample = await imapService.getAnalyticsSample(
+            typeof args.days === "number" ? args.days : 30,
+            typeof args.limit === "number" ? args.limit : 100,
+          );
           return createTextResult(
             analyticsService.getEmailStats(sample, folders, config.smtp.username),
           );
         }
 
         case "get_email_analytics": {
-          const sample = await imapService.getAnalyticsSample(30, 100);
+          const sample = await imapService.getAnalyticsSample(
+            typeof args.days === "number" ? args.days : 30,
+            typeof args.limit === "number" ? args.limit : 100,
+          );
           return createTextResult(
             analyticsService.getEmailAnalytics(sample, config.smtp.username),
           );
@@ -4312,8 +4506,15 @@ export function createServer(
           });
           const rawFolders = args?.folders;
           const threadFolders = Array.isArray(rawFolders) ? rawFolders.filter((f): f is string => typeof f === "string") : undefined;
-          void threadFolders; // extracted for future use when service supports folder scoping
-          const result = await localIndexService.getThreadById(requireString(args, "threadId"));
+          const thread = await localIndexService.getThreadById(requireString(args, "threadId"));
+          const result = threadFolders && threadFolders.length > 0
+            ? {
+                ...thread,
+                messages: thread.messages.filter((message) => threadFolders.includes(message.folder)),
+                messageCount: thread.messages.filter((message) => threadFolders.includes(message.folder)).length,
+                unreadCount: thread.messages.filter((message) => threadFolders.includes(message.folder) && !message.isRead).length,
+              }
+            : thread;
           return createTextResult(
             result,
             false,
@@ -4595,8 +4796,10 @@ export function createServer(
           });
 
         case "get_logs":
-          return createTextResult(
-            logger.getLogs({
+        {
+          const limit = normalizeLimit(args.limit, 100);
+          const offset = normalizeLimit(args.offset, 0, 0, 10_000);
+          const records = logger.getLogs({
               level:
                 args.level === "debug" ||
                 args.level === "info" ||
@@ -4604,14 +4807,19 @@ export function createServer(
                 args.level === "error"
                   ? args.level
                   : undefined,
-              limit: normalizeLimit(args.limit, 100),
-            }),
-          );
+              limit: limit + offset,
+            });
+          return createTextResult(paginateRecentRecords(records, limit, offset));
+        }
 
         case "get_audit_logs":
+        {
+          const limit = normalizeLimit(args.limit, 100);
+          const offset = normalizeLimit(args.offset, 0, 0, 10_000);
           return createTextResult(
-            await auditService.list(normalizeLimit(args.limit, 100)),
+            paginateRecentRecords(await auditService.list(limit + offset), limit, offset),
           );
+        }
 
         default:
           throw new McpError(ErrorCode.InvalidParams, `Unknown tool: ${name}`);
@@ -4619,9 +4827,9 @@ export function createServer(
     } catch (error) {
       logger.error("Tool call failed", "MCPServer", { name, error });
       if (error instanceof McpError) {
-        return createTextResult(error.message, true);
+        throw error;
       }
-      return createTextResult(error instanceof Error ? error.message : String(error), true);
+      throw new McpError(ErrorCode.InternalError, error instanceof Error ? error.message : String(error));
     }
   });
 

@@ -391,6 +391,7 @@ export interface ProtonRuntimeConfig {
   restrictOutboundToSelf: boolean;
   allowFileDownloadDir?: string;
   maxInlineBytes: number;
+  opDelayMs: number;
 }
 
 export interface BackgroundSyncStatus {

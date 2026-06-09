@@ -17,6 +17,7 @@ export function sanitizeRuntimeConfig(runtime: ProtonRuntimeConfig): Record<stri
     restrictOutboundToSelf: runtime.restrictOutboundToSelf,
     allowFileDownloadDir: runtime.allowFileDownloadDir ?? null,
     maxInlineBytes: runtime.maxInlineBytes,
+    opDelayMs: runtime.opDelayMs,
   };
 }
 

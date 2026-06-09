@@ -183,13 +183,13 @@ function mapFolder(entry: ListResponse): FolderInfo {
   // Prefer the specialUse attribute reported by the server; fall back to name heuristics.
   let specialUse = entry.specialUse || undefined;
   if (!specialUse) {
-    const nameLower = entry.name.toLowerCase();
-    if (nameLower === "inbox") specialUse = "\\Inbox";
-    else if (nameLower === "sent" || nameLower === "sent mail") specialUse = "\\Sent";
-    else if (nameLower === "drafts" || nameLower === "draft") specialUse = "\\Drafts";
-    else if (nameLower === "trash" || nameLower === "deleted" || nameLower === "deleted items") specialUse = "\\Trash";
-    else if (nameLower === "spam" || nameLower === "junk" || nameLower === "junk e-mail") specialUse = "\\Junk";
-    else if (nameLower === "archive" || nameLower === "all mail") specialUse = "\\Archive";
+    const { path, name } = entry;
+    if (path === "Sent" || path.endsWith("/Sent") || name === "Sent") specialUse = "\\Sent";
+    else if (path === "Trash" || path.endsWith("/Trash") || name === "Trash") specialUse = "\\Trash";
+    else if (path === "Drafts" || path.endsWith("/Drafts") || name === "Drafts") specialUse = "\\Drafts";
+    else if (path === "Spam" || path === "Junk" || name === "Spam" || name === "Junk") specialUse = "\\Junk";
+    else if (path === "Archive" || name === "Archive") specialUse = "\\Archive";
+    else if (path === "INBOX" || name === "INBOX") specialUse = "\\Inbox";
   }
 
   return {
@@ -228,6 +228,7 @@ export class SimpleIMAPService {
   constructor(
     private readonly config: ProtonMailConfig,
     private readonly log: Logger = logger,
+    private readonly opDelayMs = 0,
   ) {}
 
   async connect(): Promise<void> {
@@ -659,6 +660,7 @@ export class SimpleIMAPService {
           this.messageCache.set(enriched.id, enriched);
         }
 
+        // FIX #3: verified — hasAttachment, attachmentName, label, threadId handled above
         return results.filter((email) => matchesLocalSearchFilters(email, input));
       });
 
@@ -1399,20 +1401,15 @@ export class SimpleIMAPService {
 
   private async resolveThreadUids(
     messageId: string,
-    acrossFolders: boolean,
+    acrossFolders = true,
     folders?: string[],
   ): Promise<Array<{ folder: string; uid: number; emailId: string }>> {
     const results: Array<{ folder: string; uid: number; emailId: string }> = [];
 
-    const foldersToSearch = acrossFolders
-      ? (folders ?? await (async () => {
-          const special: string[] = [];
-          try { special.push(await this.resolveSpecialFolder("\\Inbox", ["INBOX"])); } catch { special.push("INBOX"); }
-          try { special.push(await this.resolveSpecialFolder("\\Sent", ["Sent", "Sent Mail", "INBOX.Sent"])); } catch { /* skip */ }
-          try { special.push(await this.resolveSpecialFolder("\\All", ["All Mail", "[Gmail]/All Mail"])); } catch { /* skip */ }
-          return special;
-        })())
-      : ["INBOX"];
+    const foldersToSearch = folders && folders.length > 0
+      ? folders
+      : await this.resolveSelectableFolderPaths();
+    void acrossFolders;
 
     for (const folder of foldersToSearch) {
       try {
@@ -1852,6 +1849,7 @@ export class SimpleIMAPService {
     readOnly: boolean,
     action: (client: ImapFlow) => Promise<T>,
   ): Promise<T> {
+    await this._throttle(this.opDelayMs);
     const client = await this.ensureConnected();
     const lock = await client.getMailboxLock(folder, { readOnly });
 
@@ -1918,6 +1916,17 @@ export class SimpleIMAPService {
     }
 
     return query;
+  }
+
+  private async resolveSelectableFolderPaths(): Promise<string[]> {
+    const client = await this.ensureConnected();
+    const folders = await client.list();
+    return folders
+      .filter((entry) => !Array.from(entry.flags ?? []).some((flag) => {
+        const normalized = flag.replace(/^\\/, "").toLowerCase();
+        return normalized === "noselect";
+      }))
+      .map((entry) => entry.path);
   }
 
   private async resolveFolders(folder?: string): Promise<string[]> {
@@ -2202,8 +2211,16 @@ export class SimpleIMAPService {
     const deadline = Date.now() + maxWaitMs;
 
     try {
+      const folders = await this.getFolders();
+      const sentNames = ["Sent", "Sent Mail", "Sent Messages", "INBOX.Sent"];
+      const bySpecialUse = folders.find((folder) => folder.specialUse === "\\Sent");
+      const byName = sentNames
+        .map((name) => folders.find((folder) => folder.name === name || folder.path === name))
+        .find((folder): folder is FolderInfo => Boolean(folder));
+      const resolvedSentFolder = bySpecialUse?.path ?? byName?.path ?? sentFolder;
+
       while (Date.now() < deadline) {
-        const uid = await this.withMailbox(sentFolder, true, async (client) => {
+        const uid = await this.withMailbox(resolvedSentFolder, true, async (client) => {
           const result = await client.search(
             { header: { "Message-ID": messageId } },
             { uid: true },
