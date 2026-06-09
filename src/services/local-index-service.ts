@@ -561,6 +561,8 @@ export class LocalIndexService {
     total: number;
     hasMore: boolean;
     emails: EmailSummary[];
+    lastSyncAt?: string;
+    indexFreshnessMinutes?: number;
   }> {
     const parsedQuery = parseSearchQuery(filters.query);
     const normalizedFilters: SearchEmailsInput = {
@@ -585,6 +587,7 @@ export class LocalIndexService {
         (entry) => entry.id === normalizedFilters.threadId,
       );
       if (thread) {
+        const freshnessFields = this.indexFreshnessFields(snapshot.updatedAt);
         const threadMessages = sortEmailsByNewest(thread.messages).filter((email) =>
           matchesIndexedSearch(email, { ...normalizedFilters, threadId: undefined }),
         ).sort((left, right) => searchRelevanceScore(right, normalizedFilters) - searchRelevanceScore(left, normalizedFilters));
@@ -593,11 +596,13 @@ export class LocalIndexService {
           total: totalCount,
           hasMore: totalCount > offset + limit,
           emails: threadMessages.slice(offset, offset + limit),
+          ...freshnessFields,
         };
       }
     }
 
     const db = await this.ensureDb();
+    const lastSyncAt = this.readLastSyncAt(db);
     const emails = this.loadCandidateEmails(db, normalizedFilters, Math.max(limit * 10, 500));
     const matches = dedupeEmails(emails)
       .filter((email) => matchesIndexedSearch(email, normalizedFilters))
@@ -614,6 +619,7 @@ export class LocalIndexService {
       total: totalCount,
       hasMore: totalCount > offset + limit,
       emails: matches.slice(offset, offset + limit),
+      ...this.indexFreshnessFields(lastSyncAt),
     };
   }
 
@@ -721,6 +727,8 @@ export class LocalIndexService {
     total: number;
     hasMore: boolean;
     threads: ThreadSummary[];
+    lastSyncAt?: string;
+    indexFreshnessMinutes?: number;
   }> {
     const snapshot = await this.loadSnapshot({ folder: input.folder, label: input.label });
     const threads = this.buildThreads(snapshot).filter((thread) => {
@@ -754,6 +762,7 @@ export class LocalIndexService {
       total: totalCount,
       hasMore: totalCount > offset + limit,
       threads: threads.slice(offset, offset + limit),
+      ...this.indexFreshnessFields(snapshot.updatedAt),
     };
   }
 
@@ -1629,7 +1638,11 @@ export class LocalIndexService {
 
   private searchFtsIds(db: Database.Database, query: string, limit: number): string[] {
     const parsed = parseSearchQuery(query);
-    const match = parsed.residualTerms
+    const FTS5_OPERATORS = new Set(["not", "and", "or", "near"]);
+    const safeTerms = parsed.residualTerms.filter(
+      (token) => !FTS5_OPERATORS.has(token.toLowerCase()) && !token.startsWith("-"),
+    );
+    const match = safeTerms
       .map((token) => `"${token.replace(/"/g, '""')}"`)
       .join(" AND ");
 
@@ -1985,6 +1998,22 @@ export class LocalIndexService {
       ...message,
       threadKey: resolveThreadKey(message),
     }));
+  }
+
+  private readLastSyncAt(db: Database.Database): string | undefined {
+    const row = db.prepare(`SELECT value FROM metadata WHERE key = 'updatedAt'`).get() as { value: string } | undefined;
+    return row?.value || undefined;
+  }
+
+  private indexFreshnessFields(lastSyncAt?: string): { lastSyncAt?: string; indexFreshnessMinutes?: number } {
+    if (!lastSyncAt) {
+      return {};
+    }
+    const freshnessMs = Date.now() - new Date(lastSyncAt).getTime();
+    return {
+      lastSyncAt,
+      indexFreshnessMinutes: Math.max(0, Math.round(freshnessMs / 60_000)),
+    };
   }
 
   private closeDb(): void {

@@ -1182,7 +1182,7 @@ const TOOLS = [
   },
   {
     name: "get_threads",
-    description: "Return normalized email threads from the local mailbox index, grouping individual messages into conversations by subject and participants. Use to view mail as threads rather than individual messages. Prefer get_actionable_threads when you want threads prioritized by reply urgency. Prefer get_inbox_digest for an executive-summary view.",
+    description: "Return normalized email threads from the local mailbox index, grouping individual messages into conversations by subject and participants. Use to view mail as threads rather than individual messages. Note: searches subject and participants only — use search_indexed_emails to search body content. Prefer get_actionable_threads when you want threads prioritized by reply urgency. Prefer get_inbox_digest for an executive-summary view.",
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
