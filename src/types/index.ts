@@ -38,6 +38,8 @@ export interface SendEmailInput {
   subject: string;
   body: string;
   isHtml?: boolean;
+  /** Pre-rendered HTML body. When set, sent as multipart/alternative with `body` as plain-text fallback. */
+  htmlBody?: string;
   priority?: "high" | "normal" | "low";
   replyTo?: string;
   inReplyTo?: string;

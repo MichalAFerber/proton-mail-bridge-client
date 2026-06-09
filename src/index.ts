@@ -43,6 +43,7 @@ import {
   normalizeLimit,
   normalizeJsonValue,
   parseEmails,
+  renderMarkdown,
   stringifyForJson,
 } from "./utils/helpers.js";
 import { logger } from "./utils/logger.js";
@@ -94,8 +95,9 @@ const TOOLS = [
         cc: { type: "string", description: "CC recipient email addresses, comma-separated." },
         bcc: { type: "string", description: "BCC recipient email addresses, comma-separated." },
         subject: { type: "string", description: "Email subject." },
-        body: { type: "string", description: "Email body content." },
-        isHtml: { type: "boolean", description: "Whether body should be sent as HTML.", default: false },
+        body: { type: "string", description: "Email body content (plain text). Required unless markdownBody is provided." },
+        markdownBody: { type: "string", description: "Email body in Markdown. When provided, rendered to HTML with body as plain-text fallback; takes precedence over body+isHtml." },
+        isHtml: { type: "boolean", description: "Whether body should be sent as HTML (ignored when markdownBody is provided).", default: false },
         priority: {
           type: "string",
           enum: ["high", "normal", "low"],
@@ -119,7 +121,7 @@ const TOOLS = [
         },
         confirmed: { type: "boolean", description: "Set to true to confirm this irreversible send when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
       },
-      required: ["to", "subject", "body"],
+      required: ["to", "subject"],
     },
   },
   {
@@ -136,14 +138,15 @@ const TOOLS = [
   },
   {
     name: "reply_to_email",
-    description: "Immediately send a reply to an existing email, threading it correctly via In-Reply-To and References headers. Use when you have an emailId and want to send the reply right away. Prefer create_reply_draft to save the reply for review first, or create_thread_reply_draft when replying from a threadId. Requires PROTONMAIL_ALLOW_SEND.",
+    description: "Immediately send a reply to an existing email, threading it correctly via In-Reply-To and References headers. Use when you have an emailId and want to send the reply right away. Prefer create_reply_draft to save the reply for review first, or create_thread_reply_draft when replying from a threadId. Use reply_all_email to reply to all original recipients. Requires PROTONMAIL_ALLOW_SEND.",
     inputSchema: {
       type: "object",
       properties: {
         emailId: { type: "string", description: "Original email id." },
-        body: { type: "string", description: "Reply body to prepend." },
+        body: { type: "string", description: "Reply body to prepend (plain text). Required unless markdownBody is provided." },
+        markdownBody: { type: "string", description: "Reply body in Markdown. Rendered to HTML with body as plain-text fallback; takes precedence over body+isHtml." },
         replyAll: { type: "boolean", description: "Reply to all original recipients.", default: false },
-        isHtml: { type: "boolean", description: "Send body as HTML.", default: false },
+        isHtml: { type: "boolean", description: "Send body as HTML (ignored when markdownBody is provided).", default: false },
         cc: { type: "string", description: "Additional CC recipients, comma-separated." },
         bcc: { type: "string", description: "Additional BCC recipients, comma-separated." },
         attachments: {
@@ -163,7 +166,39 @@ const TOOLS = [
         },
         confirmed: { type: "boolean", description: "Set to true to confirm this irreversible send when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
       },
-      required: ["emailId", "body"],
+      required: ["emailId"],
+    },
+  },
+  {
+    name: "reply_all_email",
+    description: "Immediately reply to all original recipients (sender + all To/CC addresses) of an existing email. Identical to reply_to_email with replyAll enabled. Use when the conversation involves multiple parties and all should receive the reply. Threading headers (In-Reply-To, References) are preserved. Requires PROTONMAIL_ALLOW_SEND.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        emailId: { type: "string", description: "Original email id." },
+        body: { type: "string", description: "Reply body to prepend (plain text). Required unless markdownBody is provided." },
+        markdownBody: { type: "string", description: "Reply body in Markdown. Rendered to HTML with body as plain-text fallback; takes precedence over body+isHtml." },
+        isHtml: { type: "boolean", description: "Send body as HTML (ignored when markdownBody is provided).", default: false },
+        cc: { type: "string", description: "Additional CC recipients, comma-separated." },
+        bcc: { type: "string", description: "Additional BCC recipients, comma-separated." },
+        attachments: {
+          type: "array",
+          description: "Attachments with base64 encoded content.",
+          items: {
+            type: "object",
+            properties: {
+              filename: { type: "string" },
+              content: { type: "string" },
+              contentType: { type: "string" },
+              cid: { type: "string" },
+              contentDisposition: { type: "string" },
+            },
+            required: ["filename", "content"],
+          },
+        },
+        confirmed: { type: "boolean", description: "Set to true to confirm this irreversible send when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
+      },
+      required: ["emailId"],
     },
   },
   {
@@ -174,8 +209,9 @@ const TOOLS = [
       properties: {
         emailId: { type: "string", description: "Original email id." },
         to: { type: "string", description: "Forward recipient list, comma-separated." },
-        body: { type: "string", description: "Optional message before the forwarded content." },
-        isHtml: { type: "boolean", description: "Send body as HTML.", default: false },
+        body: { type: "string", description: "Optional message before the forwarded content (plain text)." },
+        markdownBody: { type: "string", description: "Optional introductory note in Markdown. Rendered to HTML with body as plain-text fallback; takes precedence over body+isHtml." },
+        isHtml: { type: "boolean", description: "Send body as HTML (ignored when markdownBody is provided).", default: false },
         cc: { type: "string", description: "CC recipients, comma-separated." },
         bcc: { type: "string", description: "BCC recipients, comma-separated." },
         attachments: {
@@ -2287,8 +2323,10 @@ export function createServer(
           const cc = parseEmails(optionalString(args, "cc"));
           const bcc = parseEmails(optionalString(args, "bcc"));
           const subject = requireString(args, "subject");
-          const body = requireString(args, "body");
-          const isHtml = normalizeBoolean(args.isHtml, false);
+          const markdownBodySend = optionalString(args, "markdownBody");
+          const body = markdownBodySend ? markdownBodySend : requireString(args, "body");
+          const isHtml = markdownBodySend ? false : normalizeBoolean(args.isHtml, false);
+          const htmlBody = markdownBodySend ? renderMarkdown(markdownBodySend).html : undefined;
           const priority = optionalString(args, "priority");
           const replyTo = optionalString(args, "replyTo");
           const attachments = optionalAttachmentList(args.attachments);
@@ -2308,6 +2346,7 @@ export function createServer(
               subject,
               body,
               isHtml,
+              htmlBody,
               priority:
                 priority === "high" || priority === "low" || priority === "normal"
                   ? priority
@@ -2347,8 +2386,10 @@ export function createServer(
           ensureDestructiveConfirmed(config.runtime, normalizeBoolean(args.confirmed, false), `Reply to email ${String(args.emailId ?? "?")}`);
           ensureSendAllowed(config.runtime);
           const detail = await imapService.getEmailById(requireString(args, "emailId"));
-          const body = requireString(args, "body");
-          const isHtml = normalizeBoolean(args.isHtml, false);
+          const markdownBodyReply = optionalString(args, "markdownBody");
+          const body = markdownBodyReply ? markdownBodyReply : requireString(args, "body");
+          const isHtml = markdownBodyReply ? false : normalizeBoolean(args.isHtml, false);
+          const htmlBody = markdownBodyReply ? renderMarkdown(markdownBodyReply).html : undefined;
           const replyAll = normalizeBoolean(args.replyAll, false);
           const attachments = optionalAttachmentList(args.attachments);
           const extraCc = parseEmails(optionalString(args, "cc"));
@@ -2373,6 +2414,7 @@ export function createServer(
               subject: prefixedSubject(detail.subject, "Re:"),
               body: buildReplyText(detail, body),
               isHtml,
+              htmlBody,
               inReplyTo: detail.messageId,
               references: detail.messageId ? [detail.messageId] : undefined,
               attachments,
@@ -2390,6 +2432,55 @@ export function createServer(
           }, false, [emailSource(detail)]);
         }
 
+        case "reply_all_email": {
+          ensureDestructiveConfirmed(config.runtime, normalizeBoolean(args.confirmed, false), `Reply-all to email ${String(args.emailId ?? "?")}`);
+          ensureSendAllowed(config.runtime);
+          const detailRa = await imapService.getEmailById(requireString(args, "emailId"));
+          const markdownBodyRa = optionalString(args, "markdownBody");
+          const bodyRa = markdownBodyRa ? markdownBodyRa : requireString(args, "body");
+          const isHtmlRa = markdownBodyRa ? false : normalizeBoolean(args.isHtml, false);
+          const htmlBodyRa = markdownBodyRa ? renderMarkdown(markdownBodyRa).html : undefined;
+          const attachmentsRa = optionalAttachmentList(args.attachments);
+          const extraCcRa = parseEmails(optionalString(args, "cc"));
+          const extraBccRa = parseEmails(optionalString(args, "bcc"));
+          const recipientsRa = getReplyRecipients(detailRa, config.smtp.username, true);
+          const ccRa = uniqueAddresses([...recipientsRa.cc, ...extraCcRa]);
+          const toRa = uniqueAddresses(recipientsRa.to);
+
+          ensureValidEmails(toRa, "to");
+          ensureValidEmails(ccRa, "cc");
+          ensureValidEmails(extraBccRa, "bcc");
+
+          if (toRa.length === 0) {
+            throw new McpError(ErrorCode.InvalidParams, "Unable to infer reply recipients.");
+          }
+
+          const resultRa = await withAudit(auditService, name, args, async () =>
+            smtpService.sendEmail({
+              to: toRa,
+              cc: ccRa,
+              bcc: extraBccRa,
+              subject: prefixedSubject(detailRa.subject, "Re:"),
+              body: buildReplyText(detailRa, bodyRa),
+              isHtml: isHtmlRa,
+              htmlBody: htmlBodyRa,
+              inReplyTo: detailRa.messageId,
+              references: detailRa.messageId ? [detailRa.messageId] : undefined,
+              attachments: attachmentsRa,
+            }),
+          );
+
+          return createTextResult({
+            repliedTo: detailRa.id,
+            to: toRa,
+            cc: ccRa,
+            messageId: resultRa.messageId,
+            accepted: resultRa.accepted,
+            rejected: resultRa.rejected,
+            response: resultRa.response,
+          }, false, [emailSource(detailRa)]);
+        }
+
         case "forward_email": {
           ensureDestructiveConfirmed(config.runtime, normalizeBoolean(args.confirmed, false), `Forward email ${String(args.emailId ?? "?")} to ${String(args.to ?? "?")}`);
           ensureSendAllowed(config.runtime);
@@ -2397,8 +2488,10 @@ export function createServer(
           const to = parseEmails(requireString(args, "to"));
           const cc = parseEmails(optionalString(args, "cc"));
           const bcc = parseEmails(optionalString(args, "bcc"));
-          const body = optionalString(args, "body");
-          const isHtml = normalizeBoolean(args.isHtml, false);
+          const markdownBodyFwd = optionalString(args, "markdownBody");
+          const body = markdownBodyFwd ?? optionalString(args, "body");
+          const isHtml = markdownBodyFwd ? false : normalizeBoolean(args.isHtml, false);
+          const htmlBody = markdownBodyFwd ? renderMarkdown(markdownBodyFwd).html : undefined;
           const attachments = optionalAttachmentList(args.attachments);
 
           ensureValidEmails(to, "to");
@@ -2413,6 +2506,7 @@ export function createServer(
               subject: prefixedSubject(detail.subject, "Fwd:"),
               body: buildForwardText(detail, body),
               isHtml,
+              htmlBody,
               attachments,
             }),
           );

@@ -509,3 +509,89 @@ export function normalizeMailboxLabel(value?: string): string | undefined {
 
   return decoded;
 }
+
+/**
+ * Convert a markdown string to HTML, returning both the rendered HTML and the original
+ * markdown as a plain-text fallback. Handles the common patterns produced by AI assistants:
+ * headings, bold/italic, inline code, fenced code blocks, links, ordered and unordered lists,
+ * blockquotes, and horizontal rules.
+ */
+export function renderMarkdown(markdown: string): { html: string; text: string } {
+  function escHtml(s: string): string {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // Protect fenced code blocks from inline processing
+  const codeBlocks: string[] = [];
+  let html = markdown.replace(/```[\w]*\n?([\s\S]*?)```/g, (_, code) => {
+    codeBlocks.push(`<pre><code>${escHtml((code as string).trimEnd())}</code></pre>`);
+    return `\x00CODE${codeBlocks.length - 1}\x00`;
+  });
+
+  // Protect inline code
+  const inlineCodes: string[] = [];
+  html = html.replace(/`([^`\n]+)`/g, (_, code) => {
+    inlineCodes.push(`<code>${escHtml(code as string)}</code>`);
+    return `\x00IC${inlineCodes.length - 1}\x00`;
+  });
+
+  // Escape remaining HTML
+  html = html.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  // Process block-level elements line by line
+  const lines = html.split("\n");
+  const out: string[] = [];
+  let listType: "ul" | "ol" | null = null;
+
+  const closeList = (): void => {
+    if (listType) {
+      out.push(listType === "ul" ? "</ul>" : "</ol>");
+      listType = null;
+    }
+  };
+
+  for (const line of lines) {
+    let m: RegExpMatchArray | null;
+    if ((m = line.match(/^### (.+)$/))) { closeList(); out.push(`<h3>${m[1]}</h3>`); continue; }
+    if ((m = line.match(/^## (.+)$/)))  { closeList(); out.push(`<h2>${m[1]}</h2>`); continue; }
+    if ((m = line.match(/^# (.+)$/)))   { closeList(); out.push(`<h1>${m[1]}</h1>`); continue; }
+    if (/^-{3,}$/.test(line.trim()))    { closeList(); out.push("<hr>"); continue; }
+    if ((m = line.match(/^&gt; (.+)$/))){ closeList(); out.push(`<blockquote>${m[1]}</blockquote>`); continue; }
+
+    if ((m = line.match(/^[*-] (.+)$/))) {
+      if (listType !== "ul") { closeList(); out.push("<ul>"); listType = "ul"; }
+      out.push(`<li>${m[1]}</li>`);
+      continue;
+    }
+    if ((m = line.match(/^\d+\. (.+)$/))) {
+      if (listType !== "ol") { closeList(); out.push("<ol>"); listType = "ol"; }
+      out.push(`<li>${m[1]}</li>`);
+      continue;
+    }
+
+    closeList();
+    if (!line.trim()) { out.push(""); continue; }
+    out.push(`<p>${line}</p>`);
+  }
+  closeList();
+
+  html = out.join("\n");
+
+  // Inline formatting (order: bold+italic before bold before italic)
+  html = html
+    .replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>")
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/~~(.+?)~~/g, "<del>$1</del>")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+
+  // Restore protected blocks
+  for (let i = 0; i < codeBlocks.length; i++) {
+    html = html.replace(`\x00CODE${i}\x00`, codeBlocks[i]);
+  }
+  for (let i = 0; i < inlineCodes.length; i++) {
+    html = html.replace(`\x00IC${i}\x00`, inlineCodes[i]);
+  }
+
+  return { html, text: markdown };
+}

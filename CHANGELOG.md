@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## [1.12.0] — 2026-06-09
+
+### Added
+- `markdownBody` parameter on `send_email`, `reply_to_email`, and `forward_email` — pass Markdown and it is rendered to HTML with the original Markdown as plain-text fallback (multipart/alternative); takes precedence over `body`+`isHtml`
+- `reply_all_email` tool — dedicated Reply-All that sends to the original sender plus all To/CC recipients; equivalent to `reply_to_email` with `replyAll: true` but surfaced as a first-class tool with its own description and `markdownBody` support
+
 ## [1.11.0] — 2026-06-03
 
 ### Added
