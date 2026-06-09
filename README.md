@@ -10,11 +10,12 @@
 <div align="center">
 
 [![npm version](https://img.shields.io/npm/v/proton-mail-bridge-client?color=%236d4aff&label=npm)](https://www.npmjs.com/package/proton-mail-bridge-client)
-[![npm downloads](https://img.shields.io/npm/dm/proton-mail-bridge-client?color=%236d4aff)](https://www.npmjs.com/package/proton-mail-bridge-client)
 [![CI](https://github.com/googlarz/proton-mail-bridge-client/actions/workflows/ci.yml/badge.svg)](https://github.com/googlarz/proton-mail-bridge-client/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js 20+](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![MCP](https://img.shields.io/badge/MCP-compatible-blueviolet)](https://modelcontextprotocol.io)
+[![GitHub stars](https://img.shields.io/github/stars/googlarz/proton-mail-bridge-client?style=social)](https://github.com/googlarz/proton-mail-bridge-client)
 [![Glama](https://glama.ai/mcp/servers/googlarz/proton-mail-bridge-client/badges/card.svg)](https://glama.ai/mcp/servers/googlarz/proton-mail-bridge-client)
 
 </div>
