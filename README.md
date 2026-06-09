@@ -4,17 +4,10 @@
  | |_) | |_) | | | || || | | |  \| | | |\/| | / _ \  | || |
  |  __/|  _ <| |_| || || |_| | |\  | | |  | |/ ___ \ | || |___
  |_|   |_| \___/ |_| \___/|_| \_| |_|  |_/_/   \_\___|_____|
+  Bridge Client  ·  MCP server + CLI for Proton Mail
 ```
 
 <div align="center">
-
-### MCP server + CLI for Proton Mail
-
-**Read · Search · Send · Draft · Triage · Archive · Automate**
-
-*Runs entirely on your machine through Proton Bridge — no hosted relay, no cloud dependency*
-
-<br/>
 
 [![npm version](https://img.shields.io/npm/v/proton-mail-bridge-client?color=%236d4aff&label=npm)](https://www.npmjs.com/package/proton-mail-bridge-client)
 [![npm downloads](https://img.shields.io/npm/dm/proton-mail-bridge-client?color=%236d4aff)](https://www.npmjs.com/package/proton-mail-bridge-client)
