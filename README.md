@@ -11,6 +11,8 @@
 
 [![proton-mail-bridge-client MCP server](https://glama.ai/mcp/servers/googlarz/proton-mail-bridge-client/badges/card.svg)](https://glama.ai/mcp/servers/googlarz/proton-mail-bridge-client)
 
+![Demo: triaging an inbox from Claude Desktop](docs/demo.gif)
+
 A full-featured CLI and Claude Desktop MCP for Proton Mail, built on top of Proton Bridge.
 
 ## About

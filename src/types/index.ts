@@ -205,7 +205,9 @@ export type EmailAction =
   | "unstar"
   | "archive"
   | "trash"
-  | "restore";
+  | "restore"
+  | "move"
+  | "delete";
 
 export interface BatchActionEntry {
   emailId: string;
@@ -259,6 +261,7 @@ export interface GetEmailsInput {
   folder?: string;
   limit?: number;
   offset?: number;
+  includeSnippet?: boolean;
 }
 
 export interface SearchEmailsInput {
@@ -278,6 +281,7 @@ export interface SearchEmailsInput {
   dateFrom?: string;
   dateTo?: string;
   limit?: number;
+  includeSnippet?: boolean;
 }
 
 export interface SyncEmailsInput {

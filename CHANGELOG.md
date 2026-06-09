@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## [1.12.1] — 2026-06-09
+
+### Added
+- `update_message_labels` tool — add or remove Proton labels on a message without moving it (COPY to `Labels/<name>` to add; search by Message-ID and expunge to remove); idempotent removes
+- `includeSnippet` parameter on `get_emails` and `search_emails` — opt-in plain-text body preview in list results, avoids follow-up `get_email_by_id` calls for triage workflows
+- `move` action in `batch_email_action` — bulk-move emails to any folder (requires `targetFolder`); previously only single-email `move_email` was available
+- `delete` action in `batch_email_action` — permanent bulk expunge with `dryRun` preview support
+- `docs/recording-guide.md` and README demo GIF placeholder — step-by-step guide to record the triage session GIF
+
 ## [1.12.0] — 2026-06-09
 
 ### Added

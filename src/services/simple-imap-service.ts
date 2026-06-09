@@ -528,11 +528,16 @@ export class SimpleIMAPService {
       const endSeq = total - offset;
       const startSeq = Math.max(1, endSeq - limit + 1);
       const emails: EmailSummary[] = [];
+      const fetchQuery = input.includeSnippet ? FETCH_DETAIL_QUERY : FETCH_SUMMARY_QUERY;
 
-      for await (const message of client.fetch(`${startSeq}:${endSeq}`, FETCH_SUMMARY_QUERY)) {
+      for await (const message of client.fetch(`${startSeq}:${endSeq}`, fetchQuery)) {
         const summary = this.toSummary(folder, message);
-        emails.push(summary);
-        this.messageCache.set(summary.id, summary);
+        const enriched =
+          input.includeSnippet && message.source
+            ? await this.enrichSummaryFromParsed(summary, await this.parseSource(message.source), false)
+            : summary;
+        emails.push(enriched);
+        this.messageCache.set(enriched.id, enriched);
       }
 
       return {
@@ -592,10 +597,15 @@ export class SimpleIMAPService {
         const targetUids = [...uids].slice(-limit).reverse();
         const results: EmailSummary[] = [];
 
-        for await (const message of client.fetch(targetUids, FETCH_SUMMARY_QUERY, { uid: true })) {
+        const fetchQuery = input.includeSnippet ? FETCH_DETAIL_QUERY : FETCH_SUMMARY_QUERY;
+        for await (const message of client.fetch(targetUids, fetchQuery, { uid: true })) {
           const summary = this.toSummary(folder, message);
-          results.push(summary);
-          this.messageCache.set(summary.id, summary);
+          const enriched =
+            input.includeSnippet && message.source
+              ? await this.enrichSummaryFromParsed(summary, await this.parseSource(message.source), false)
+              : summary;
+          results.push(enriched);
+          this.messageCache.set(enriched.id, enriched);
         }
 
         return results.filter((email) => matchesLocalSearchFilters(email, input));
@@ -854,6 +864,68 @@ export class SimpleIMAPService {
       uid,
       deleted: true,
     };
+  }
+
+  async updateMessageLabels(
+    emailId: string,
+    labelsToAdd: string[],
+    labelsToRemove: string[],
+  ): Promise<{ emailId: string; added: string[]; removed: string[]; notFound: string[] }> {
+    const { folder, uid } = parseEmailId(emailId);
+    const added: string[] = [];
+    const removed: string[] = [];
+    const notFound: string[] = [];
+
+    // Retrieve the Message-ID header once (needed for label removal lookup)
+    let messageId: string | undefined;
+    await this.withMailbox(folder, true, async (client) => {
+      const msg = await client.fetchOne(String(uid), { uid: true, envelope: true }, { uid: true });
+      if (msg !== false) {
+        messageId = msg.envelope?.messageId;
+      }
+    });
+
+    // Add labels: COPY the message into each Labels/<name> folder
+    for (const label of labelsToAdd) {
+      const labelFolder = label.startsWith("Labels/") ? label : `Labels/${label}`;
+      try {
+        await this.withMailbox(folder, false, async (client) => {
+          const result = await client.messageCopy(String(uid), labelFolder, { uid: true });
+          if (result === false) {
+            throw new Error(`Server did not copy message to ${labelFolder}`);
+          }
+        });
+        added.push(labelFolder);
+      } catch {
+        notFound.push(labelFolder);
+      }
+    }
+
+    // Remove labels: find the UID in Labels/<name> by Message-ID, then delete it
+    for (const label of labelsToRemove) {
+      const labelFolder = label.startsWith("Labels/") ? label : `Labels/${label}`;
+      try {
+        let labelUid: number | undefined;
+        if (messageId) {
+          await this.withMailbox(labelFolder, true, async (client) => {
+            const uids = await client.search({ header: { "Message-ID": messageId! } }, { uid: true });
+            labelUid = Array.isArray(uids) ? uids[0] : undefined;
+          });
+        }
+        if (labelUid) {
+          await this.withMailbox(labelFolder, false, async (client) => {
+            await client.messageDelete(String(labelUid), { uid: true });
+          });
+          removed.push(labelFolder);
+        } else {
+          notFound.push(labelFolder);
+        }
+      } catch {
+        notFound.push(labelFolder);
+      }
+    }
+
+    return { emailId, added, removed, notFound };
   }
 
   async syncEmails(input: SyncEmailsInput = {}): Promise<{

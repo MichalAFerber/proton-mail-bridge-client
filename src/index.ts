@@ -82,6 +82,8 @@ const ALL_EMAIL_ACTIONS: EmailAction[] = [
   "archive",
   "trash",
   "restore",
+  "move",
+  "delete",
 ];
 
 const TOOLS = [
@@ -462,6 +464,7 @@ const TOOLS = [
         folder: { type: "string", description: "Folder name.", default: "INBOX" },
         limit: { type: "number", description: "Number of emails to return.", default: 50 },
         offset: { type: "number", description: "Pagination offset from newest first.", default: 0 },
+        includeSnippet: { type: "boolean", description: "Fetch a short plain-text preview of each email body. Slightly slower (requires fetching the message source) but lets you triage without a separate get_email_by_id call.", default: false },
       },
     },
   },
@@ -496,6 +499,7 @@ const TOOLS = [
         dateFrom: { type: "string", description: "Inclusive start date/time in ISO format." },
         dateTo: { type: "string", description: "Inclusive end date/time in ISO format." },
         limit: { type: "number", description: "Maximum results.", default: 100 },
+        includeSnippet: { type: "boolean", description: "Fetch a short plain-text preview of each matched email body. Slightly slower but avoids follow-up get_email_by_id calls for triage.", default: false },
       },
     },
   },
@@ -632,8 +636,29 @@ const TOOLS = [
     },
   },
   {
+    name: "update_message_labels",
+    description: "Add or remove Proton labels on a message without moving it. Labels are IMAP folders under the Labels/ namespace (e.g. 'Labels/Work', 'Labels/Receipts'). Adding copies the message into the label folder; removing finds and expunges it from that folder. The message stays in its source folder. Create missing labels first with create_folder using a 'Labels/' prefix.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        emailId: { type: "string", description: "Composite email id in FOLDER::UID format." },
+        labelsToAdd: {
+          type: "array",
+          items: { type: "string" },
+          description: "Label paths to add, e.g. [\"Labels/Work\", \"Labels/Receipts\"]. The 'Labels/' prefix is optional and will be prepended if missing.",
+        },
+        labelsToRemove: {
+          type: "array",
+          items: { type: "string" },
+          description: "Label paths to remove. Idempotent — silently ignored if the label is not applied.",
+        },
+      },
+      required: ["emailId"],
+    },
+  },
+  {
     name: "batch_email_action",
-    description: "Apply a reversible mailbox action to multiple emails in a single IMAP call. Use when you have a set of emailIds to act on at once (mark_read, mark_unread, star, unstar, archive, trash, restore). Supports dryRun to preview impact before mutating. Prefer apply_thread_action when acting by threadId rather than individual email ids.",
+    description: "Apply a mailbox action to multiple emails in a single IMAP pass. Actions: mark_read, mark_unread, star, unstar, archive, trash, restore, move (requires targetFolder), delete (permanent expunge — use with care). Supports dryRun to preview impact before mutating. Prefer apply_thread_action when acting by threadId rather than individual email ids.",
     inputSchema: {
       type: "object",
       properties: {
@@ -651,11 +676,11 @@ const TOOLS = [
         },
         action: {
           type: "string",
-          enum: ["mark_read", "mark_unread", "star", "unstar", "archive", "trash", "restore"],
+          enum: ["mark_read", "mark_unread", "star", "unstar", "archive", "trash", "restore", "move", "delete"],
         },
         targetFolder: {
           type: "string",
-          description: "Optional restore destination. Used only when action is restore.",
+          description: "Destination folder. Required when action is 'move'; optional for 'restore' (defaults to INBOX).",
         },
         continueOnError: {
           type: "boolean",
@@ -1831,6 +1856,11 @@ async function runEmailAction(
       return imapService.trashEmail(emailId);
     case "restore":
       return imapService.restoreEmail(emailId, targetFolder);
+    case "move":
+      if (!targetFolder) throw new McpError(ErrorCode.InvalidParams, "targetFolder is required for action 'move'.");
+      return imapService.moveEmail(emailId, targetFolder);
+    case "delete":
+      return imapService.deleteEmail(emailId);
   }
 }
 
@@ -1917,7 +1947,11 @@ async function previewEmailAction(
         ? "Trash"
         : action === "restore"
           ? targetFolder || "INBOX"
-          : detail.folder;
+          : action === "move"
+            ? targetFolder || detail.folder
+            : action === "delete"
+              ? "(expunged)"
+              : detail.folder;
 
   return {
     emailId,
@@ -2972,6 +3006,7 @@ export function createServer(
             folder: optionalString(args, "folder"),
             limit: typeof args.limit === "number" ? args.limit : undefined,
             offset: typeof args.offset === "number" ? args.offset : undefined,
+            includeSnippet: normalizeBoolean(args.includeSnippet, false),
           });
           return createTextResult(result, false, result.emails.map(emailSource));
         }
@@ -3002,8 +3037,27 @@ export function createServer(
             dateFrom: optionalString(args, "dateFrom"),
             dateTo: optionalString(args, "dateTo"),
             limit: typeof args.limit === "number" ? args.limit : undefined,
+            includeSnippet: normalizeBoolean(args.includeSnippet, false),
           });
           return createTextResult(result, false, result.emails.map(emailSource));
+        }
+
+        case "update_message_labels": {
+          ensureMailboxWriteAllowed(config.runtime);
+          const emailId = requireString(args, "emailId");
+          const labelsToAdd = Array.isArray(args.labelsToAdd)
+            ? (args.labelsToAdd as unknown[]).map(String)
+            : [];
+          const labelsToRemove = Array.isArray(args.labelsToRemove)
+            ? (args.labelsToRemove as unknown[]).map(String)
+            : [];
+          if (labelsToAdd.length === 0 && labelsToRemove.length === 0) {
+            throw new McpError(ErrorCode.InvalidParams, "Provide at least one label in labelsToAdd or labelsToRemove.");
+          }
+          const result = await withAudit(auditService, name, args, async () =>
+            imapService.updateMessageLabels(emailId, labelsToAdd, labelsToRemove),
+          );
+          return createTextResult(result, false, [emailSource({ id: emailId } as Parameters<typeof emailSource>[0])]);
         }
 
         case "get_folders":
