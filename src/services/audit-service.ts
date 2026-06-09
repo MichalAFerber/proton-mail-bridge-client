@@ -1,8 +1,9 @@
-import { appendFile, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { AuditEntry, ProtonMailConfig } from "../types/index.js";
 
 const MAX_AUDIT_BYTES = 5 * 1024 * 1024;
+const MAX_AUDIT_LINES = 10000;
 
 export class AuditService {
   private readonly auditPath: string;
@@ -33,8 +34,9 @@ export class AuditService {
   }
 
   async list(limit = 100): Promise<AuditEntry[]> {
-    const entries = [...(await this.readEntries(this.archivePath)), ...(await this.readEntries(this.auditPath))];
-    return entries.slice(-limit);
+    const cap = Math.min(limit, MAX_AUDIT_LINES);
+    const entries = [...(await this.readEntries(this.archivePath, cap)), ...(await this.readEntries(this.auditPath, cap))];
+    return entries.slice(-cap);
   }
 
   private async rotateIfNeeded(): Promise<void> {
@@ -43,7 +45,6 @@ export class AuditService {
       if (info.size < MAX_AUDIT_BYTES) {
         return;
       }
-      await rm(this.archivePath, { force: true });
       await rename(this.auditPath, this.archivePath);
     } catch (error) {
       if (error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "ENOENT") {
@@ -68,13 +69,12 @@ export class AuditService {
       .replace(/:[^:@/\s]+@/g, ":REDACTED@");
   }
 
-  private async readEntries(path: string): Promise<AuditEntry[]> {
+  private async readEntries(path: string, maxLines = MAX_AUDIT_LINES): Promise<AuditEntry[]> {
     try {
       const raw = await readFile(path, "utf8");
-      return raw
-        .split(/\r?\n/)
-        .filter(Boolean)
-        .flatMap((line) => {
+      const allLines = raw.split(/\r?\n/).filter(Boolean);
+      const lines = allLines.slice(-maxLines);
+      return lines.flatMap((line) => {
           try {
             return [JSON.parse(line) as AuditEntry];
           } catch {

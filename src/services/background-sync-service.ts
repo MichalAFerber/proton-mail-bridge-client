@@ -113,13 +113,15 @@ export class BackgroundSyncService {
         this.status.lastSuccessAt = snapshot.syncedAt;
         this.status.lastError = undefined;
         this.status.lastFailureKind = undefined;
+        this.status.lastFailureMessage = undefined;
         this.authFailureCount = 0;
         this.transientFailureCount = 0;
       } catch (error) {
         failureKind = isLikelyAuthenticationError(error) ? "auth" : "transient";
         this.status.lastError = error instanceof Error ? error.message : String(error);
         this.status.lastFailureKind = failureKind;
-        this.log.warn("Background mailbox sync failed", "BackgroundSyncService", {
+        this.status.lastFailureMessage = this.status.lastError;
+        this.log.error("Background mailbox sync failed", "BackgroundSyncService", {
           reason,
           failureKind,
           error,

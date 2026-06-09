@@ -413,6 +413,7 @@ export interface BackgroundSyncStatus {
   lastIdleEventCount?: number;
   lastIdleError?: string;
   lastFailureKind?: "auth" | "transient";
+  lastFailureMessage?: string;
   backoffUntil?: string;
   nextRunAt?: string;
 }
