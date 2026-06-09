@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { copyFileSync } from "node:fs";
+import { mkdir, readFile, rename, rm, writeFile, readdir, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type {
   DraftMode,
@@ -301,6 +302,14 @@ export class DraftStoreService {
       return this.loadedStore;
     }
 
+    // GAP-16: Concurrent server instances are NOT supported. This service uses an
+    // in-process promise chain (_lock) for serialisation, which provides no protection
+    // against a second server process operating on the same drafts.json simultaneously.
+    // Running multiple instances against the same dataDir will cause lost updates.
+
+    // GAP-09: Clean up orphaned .tmp files left by a previous crashed write.
+    await this.cleanOrphanedTempFiles();
+
     try {
       const raw = await readFile(this.draftPath, "utf8");
       const parsed = JSON.parse(raw) as DraftStoreFile;
@@ -324,18 +333,61 @@ export class DraftStoreService {
         this.loadedStore = empty;
         return empty;
       }
-      this.log.warn("Failed to load draft store, recreating it", "DraftStoreService", error);
+
+      // GAP-09: JSON parse failure means the file is corrupted. Back it up so the
+      // user can attempt manual recovery, then recreate an empty store.
+      const corruptPath = `${this.draftPath}.corrupt`;
+      try {
+        copyFileSync(this.draftPath, corruptPath);
+        this.log.error(
+          `Corrupted drafts.json backed up to ${corruptPath} — recreating empty store`,
+          "DraftStoreService",
+          error,
+        );
+      } catch (backupError) {
+        this.log.error(
+          "Failed to back up corrupted drafts.json — recreating empty store without backup",
+          "DraftStoreService",
+          { parseError: error, backupError },
+        );
+      }
+
       const empty = createEmptyStore();
       this.loadedStore = empty;
       return empty;
     }
   }
 
+  private async cleanOrphanedTempFiles(): Promise<void> {
+    const dir = dirname(this.draftPath);
+    try {
+      const entries = await readdir(dir);
+      const tmpFiles = entries.filter((name) => name.endsWith(".tmp"));
+      await Promise.all(
+        tmpFiles.map((name) =>
+          unlink(join(dir, name)).catch((err) => {
+            this.log.warn(`Failed to remove orphaned temp file: ${name}`, "DraftStoreService", err);
+          }),
+        ),
+      );
+    } catch {
+      // Directory may not exist yet — ignore.
+    }
+  }
+
   private async save(store: DraftStoreFile): Promise<void> {
     await mkdir(dirname(this.draftPath), { recursive: true });
     const tempPath = `${this.draftPath}.tmp`;
-    await writeFile(tempPath, JSON.stringify(store, null, 2), "utf8");
-    await rename(tempPath, this.draftPath);
+    try {
+      await writeFile(tempPath, JSON.stringify(store, null, 2), "utf8");
+      await rename(tempPath, this.draftPath);
+    } catch (error) {
+      // #17: If the write fails (disk full, permission error, etc.), the in-memory
+      // loadedStore may already reflect mutations from the caller. Reset it so the
+      // next operation re-reads from disk and doesn't operate on stale state.
+      this.loadedStore = undefined;
+      throw error;
+    }
     this.loadedStore = store;
   }
 
