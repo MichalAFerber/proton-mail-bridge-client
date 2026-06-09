@@ -246,6 +246,8 @@ export class SimpleIMAPService {
   private lastIdleEventCount?: number;
   private lastIdleError?: string;
   private _lastOpTs = 0;
+  private _connectingPromise?: Promise<void>;
+  private readonly _idleActive = new Map<string, boolean>();
 
   constructor(
     private readonly config: ProtonMailConfig,
@@ -258,31 +260,43 @@ export class SimpleIMAPService {
       return;
     }
 
-    await this.disconnect();
+    // Inflight-promise guard: if a connect() is already in progress, wait for
+    // it rather than racing to create a second TCP connection (zombie guard).
+    if (this._connectingPromise) {
+      return this._connectingPromise;
+    }
 
-    const client = new ImapFlow({
-      host: this.config.imap.host,
-      port: this.config.imap.port,
-      secure: this.config.imap.secure,
-      doSTARTTLS: this.config.imap.secure ? undefined : true,
-      auth: {
-        user: this.config.imap.username,
-        pass: this.config.imap.password,
-      },
-      tls: this.shouldRelaxTlsVerification() ? { rejectUnauthorized: false } : undefined,
-      disableAutoIdle: true,
-      maxIdleTime: this.config.runtime.idleMaxSeconds * 1000,
-      logger: false,
-      connectionTimeout: 15_000,
-      greetingTimeout: 15_000,
+    this._connectingPromise = (async () => {
+      await this.disconnect();
+
+      const client = new ImapFlow({
+        host: this.config.imap.host,
+        port: this.config.imap.port,
+        secure: this.config.imap.secure,
+        doSTARTTLS: this.config.imap.secure ? undefined : true,
+        auth: {
+          user: this.config.imap.username,
+          pass: this.config.imap.password,
+        },
+        tls: this.shouldRelaxTlsVerification() ? { rejectUnauthorized: false } : undefined,
+        disableAutoIdle: true,
+        maxIdleTime: this.config.runtime.idleMaxSeconds * 1000,
+        logger: false,
+        connectionTimeout: 15_000,
+        greetingTimeout: 15_000,
+      });
+
+      client.on("error", (error) => {
+        this.log.warn("IMAP client error", "IMAPService", error);
+      });
+
+      await client.connect();
+      this.client = client;
+    })().finally(() => {
+      this._connectingPromise = undefined;
     });
 
-    client.on("error", (error) => {
-      this.log.warn("IMAP client error", "IMAPService", error);
-    });
-
-    await client.connect();
-    this.client = client;
+    return this._connectingPromise;
   }
 
   async disconnect(): Promise<void> {
@@ -337,8 +351,20 @@ export class SimpleIMAPService {
   }> {
     const folder = input.folder?.trim() || "INBOX";
     const timeoutMs = normalizeLimit(input.timeoutMs, this.config.runtime.idleMaxSeconds * 1000, 1_000, 300_000);
+
+    // IDLE semaphore: prevent stacking concurrent IDLE sessions per folder,
+    // which would exhaust Proton Bridge's connection limit.
+    if (this._idleActive.get(folder)) {
+      return { folder, timeoutMs, checkedAt: new Date().toISOString(), changed: false, events: [] };
+    }
+    this._idleActive.set(folder, true);
+
     const client = await this.ensureConnected();
-    return this.waitForMailboxChangesWithClient(client, folder, timeoutMs, true);
+    try {
+      return await this.waitForMailboxChangesWithClient(client, folder, timeoutMs, true);
+    } finally {
+      this._idleActive.delete(folder);
+    }
   }
 
   private async waitForMailboxChangesWithClient(
@@ -582,6 +608,12 @@ export class SimpleIMAPService {
         if (!uids || uids.length === 0) {
           return { folder, total, limit, offset, emails: [] };
         }
+        // Use the UID-filtered count as effectiveTotal for accurate early-exit
+        // (total reflects mailbox.exists which includes UIDs >= beforeUid)
+        const effectiveTotal = uids.length;
+        if (offset >= effectiveTotal) {
+          return { folder, total, limit, offset, emails: [] };
+        }
         const sorted = input.sortByUid === "asc" ? uids.sort((a, b) => a - b) : uids.sort((a, b) => b - a);
         const page = sorted.slice(offset, offset + limit);
         if (page.length === 0) {
@@ -707,6 +739,8 @@ export class SimpleIMAPService {
     const attachments = this.mapParsedAttachmentsWithContent(parsed);
     const saved: AttachmentContentResult[] = [];
     let skipped = 0;
+    // Track resolved output paths to detect filename collisions within this batch
+    const usedPaths = new Set<string>();
 
     for (const attachment of attachments) {
       if (!input.includeInline && attachment.isInline) {
@@ -734,10 +768,28 @@ export class SimpleIMAPService {
         continue;
       }
 
-      const targetPath =
-        input.outputPath && attachment.filename
-          ? join(resolve(input.outputPath), sanitizeFileName(attachment.filename, attachmentId))
-          : input.outputPath;
+      let targetPath: string | undefined;
+      if (input.outputPath && attachment.filename) {
+        const sanitized = sanitizeFileName(attachment.filename, attachmentId);
+        const base = join(resolve(input.outputPath), sanitized);
+        // Deduplicate: if path already used, append numeric suffix (image.png → image (1).png)
+        if (!usedPaths.has(base)) {
+          targetPath = base;
+        } else {
+          const ext = sanitized.includes(".") ? sanitized.slice(sanitized.lastIndexOf(".")) : "";
+          const stem = sanitized.slice(0, sanitized.length - ext.length);
+          let counter = 1;
+          let candidate: string;
+          do {
+            candidate = join(resolve(input.outputPath), `${stem} (${counter})${ext}`);
+            counter++;
+          } while (usedPaths.has(candidate));
+          targetPath = candidate;
+        }
+        usedPaths.add(targetPath);
+      } else {
+        targetPath = input.outputPath;
+      }
 
       saved.push(await this.writeAttachmentToPath(input.emailId, attachment, targetPath));
     }
@@ -774,7 +826,8 @@ export class SimpleIMAPService {
         isSignature: attachment.isSignature,
       },
       text:
-        attachment.content.length <= MAX_ATTACHMENT_TEXT_BYTES
+        // GAP-12: guard zero-byte attachments before calling toString()
+        attachment.content && attachment.content.length > 0 && attachment.content.length <= MAX_ATTACHMENT_TEXT_BYTES
           ? attachment.contentType?.toLowerCase() === "text/html"
             ? stripHtmlToText(attachment.content.toString("utf8"))
             : attachment.contentType?.toLowerCase() === "text/calendar"
@@ -2056,6 +2109,10 @@ export class SimpleIMAPService {
     const { folder, uid } = parseEmailId(emailId);
 
     return this.withMailbox(folder, true, async (client) => {
+      // NOTE: UIDs can be reused after mailbox recreation (UIDVALIDITY change).
+      // assertMailboxUidValidity handles this at the withMailbox level for mutating
+      // ops. For read-only fetches, callers should re-sync after a UIDVALIDITY
+      // change to avoid fetching the wrong message with a recycled UID.
       const message = await client.fetchOne(String(uid), FETCH_DETAIL_QUERY, { uid: true });
       if (!message || !message.source) {
         throw new Error(`Email not found for id ${emailId}`);
@@ -2094,6 +2151,11 @@ export class SimpleIMAPService {
   private extractAttachmentSearchText(parsed: ParsedMail): string | undefined {
     const parts = (parsed.attachments ?? [])
       .flatMap((attachment) => {
+        // Guard against zero-byte attachments to avoid calling toString() on empty content
+        if (!attachment.content || attachment.content.length === 0) {
+          return [];
+        }
+
         if (attachment.content.length > MAX_ATTACHMENT_TEXT_BYTES) {
           return [];
         }
@@ -2108,7 +2170,24 @@ export class SimpleIMAPService {
         }
 
         if (isTextLikeMimeType(contentType)) {
-          return [previewText(attachment.content.toString("utf8"), 8_000) || ""];
+          // GAP-13: mailparser decodes text/* parts to UTF-8 before populating
+          // attachment.content, so utf8 is correct here. If a charset parameter
+          // is present on a non-utf8/ascii encoding and mailparser couldn't convert
+          // it (e.g. an obscure EBCDIC variant), we fall back to latin1, which is
+          // a safe lossless representation of any single-byte encoding.
+          // iconv-lite would handle multi-byte non-UTF charsets more correctly but
+          // is not a current dependency.
+          let decoded: string;
+          try {
+            decoded = attachment.content.toString("utf8");
+            // Detect common replacement-character pattern indicating wrong encoding
+            if (decoded.includes("�")) {
+              decoded = attachment.content.toString("latin1");
+            }
+          } catch {
+            decoded = attachment.content.toString("latin1");
+          }
+          return [previewText(decoded, 8_000) || ""];
         }
 
         return [];
