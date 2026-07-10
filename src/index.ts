@@ -5,7 +5,6 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve as pathResolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -16,6 +15,7 @@ import {
   McpError,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { isMainModule } from "./is-main.js";
 import { AnalyticsService } from "./services/analytics-service.js";
 import { AuditService } from "./services/audit-service.js";
 import { BackgroundSyncService } from "./services/background-sync-service.js";
@@ -5012,8 +5012,7 @@ process.on("unhandledRejection", (reason) => {
   process.exit(1);
 });
 
-const isDirectExecution =
-  Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isDirectExecution = isMainModule(import.meta.url);
 
 if (isDirectExecution) {
   main().catch((error) => {

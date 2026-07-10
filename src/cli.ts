@@ -3,10 +3,11 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { buildConfigFromEnv, createServer } from "./index.js";
+import { isMainModule } from "./is-main.js";
 import { SimpleIMAPService } from "./services/simple-imap-service.js";
 import type { EmailAddress, EmailDetail, EmailSummary, ProtonMailConfig, SearchEmailsInput } from "./types/index.js";
 import { ensureMailboxWriteAllowed, ensureSendAllowed, sanitizeRuntimeConfig } from "./utils/runtime-policy.js";
@@ -1896,8 +1897,7 @@ export async function main(): Promise<void> {
   }
 }
 
-const isDirectExecution =
-  Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isDirectExecution = isMainModule(import.meta.url);
 
 if (isDirectExecution) {
   main().catch((error) => {
