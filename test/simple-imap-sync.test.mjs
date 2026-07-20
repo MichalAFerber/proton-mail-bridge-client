@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { planFolderSync, SimpleIMAPService } from "../dist/services/simple-imap-service.js";
+import { pickNewestUids, planFolderSync, SimpleIMAPService } from "../dist/services/simple-imap-service.js";
 
 function createConfig() {
   return {
@@ -127,4 +127,21 @@ test("emptyFolder rejects INBOX before making IMAP calls", async () => {
     /cannot be used on INBOX/i,
   );
   assert.equal(connectCalls, 0);
+});
+
+test("pickNewestUids picks by date, not by UID order (GitHub issue #6)", () => {
+  // Reproduces an imported mailbox: today's messages sit on low UIDs while
+  // messages from a year ago occupy the highest UIDs. slice(-limit) on UIDs
+  // would silently keep the old messages and drop today's.
+  const dated = [
+    { uid: 1, date: Date.now() },
+    { uid: 2, date: Date.now() - 1_000 },
+    { uid: 3, date: Date.now() - 2_000 },
+    { uid: 10_600, date: Date.now() - 365 * 24 * 60 * 60 * 1000 },
+    { uid: 10_601, date: Date.now() - 366 * 24 * 60 * 60 * 1000 },
+  ];
+
+  const picked = pickNewestUids(dated, 3);
+
+  assert.deepEqual(picked.sort(), [1, 2, 3]);
 });

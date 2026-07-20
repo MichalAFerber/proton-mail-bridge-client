@@ -115,6 +115,16 @@ export function isLikelyAuthenticationError(error: unknown): boolean {
   ].some((needle) => haystack.includes(needle));
 }
 
+// UID order does not track date order (e.g. after a cross-provider import), so picking
+// the target subset by UID (slice(-limit)) can silently drop the newest messages. This
+// picks by INTERNALDATE instead. See GitHub issue #6.
+export function pickNewestUids(dated: { uid: number; date: number }[], limit: number): number[] {
+  return [...dated]
+    .sort((a, b) => b.date - a.date)
+    .slice(0, limit)
+    .map((entry) => entry.uid);
+}
+
 export interface FolderSyncPlan {
   folder: string;
   strategy: MailboxSyncCheckpoint["strategy"];
@@ -668,22 +678,39 @@ export class SimpleIMAPService {
     folders: string[];
     limit: number;
     total: number;
+    totalMatched: number;
+    hasMore: boolean;
     emails: EmailSummary[];
   }> {
     const limit = normalizeLimit(input.limit, 100);
     const folders = await this.resolveFolders(input.folder);
     const searchQuery = this.buildSearchQuery(input);
     const collected: EmailSummary[] = [];
+    let totalMatched = 0;
 
     for (const folder of folders) {
       const emails = await this.withMailbox(folder, true, async (client) => {
         const searchResult = await client.search(searchQuery, { uid: true });
         const uids = searchResult || [];
+        totalMatched += uids.length;
         if (uids.length === 0) {
           return [];
         }
 
-        const targetUids = [...uids].slice(-limit).reverse();
+        // UID order does not track date order (e.g. after a cross-provider import),
+        // so a naive slice(-limit) on UIDs can silently drop the newest messages.
+        // Fetch cheap INTERNALDATE-only headers first, sort by date, then pick the target UIDs.
+        let targetUids = uids;
+        if (uids.length > limit) {
+          const dated: { uid: number; date: number }[] = [];
+          for await (const message of client.fetch(uids, FETCH_INDEX_QUERY, { uid: true })) {
+            dated.push({ uid: message.uid, date: new Date(message.internalDate ?? 0).getTime() });
+          }
+          targetUids = pickNewestUids(dated, limit);
+        } else {
+          targetUids = [...uids].reverse();
+        }
+
         const results: EmailSummary[] = [];
 
         const fetchQuery = input.includeSnippet ? FETCH_DETAIL_QUERY : FETCH_SUMMARY_QUERY;
@@ -709,6 +736,8 @@ export class SimpleIMAPService {
       folders,
       limit,
       total: sorted.length,
+      totalMatched,
+      hasMore: totalMatched > sorted.length,
       emails: sorted,
     };
   }

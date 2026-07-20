@@ -141,7 +141,14 @@ async function main(): Promise<void> {
   });
   const selfTo = process.env.PROTONMAIL_SMOKE_SELF_TO || config.smtp.username;
   const forwardTo = process.env.PROTONMAIL_SMOKE_FORWARD_TO || selfTo;
-  const allowMutations = process.env.PROTONMAIL_SMOKE_ALLOW_MUTATIONS === "true";
+  // Runtime policy (PROTONMAIL_READ_ONLY / PROTONMAIL_ALLOW_SEND) always wins over the
+  // smoke-test flag — a read-only or send-disabled config must never send mail or sync
+  // remote drafts, even if PROTONMAIL_SMOKE_ALLOW_MUTATIONS=true was also set.
+  const allowMutations =
+    process.env.PROTONMAIL_SMOKE_ALLOW_MUTATIONS === "true" &&
+    !config.runtime.readOnly &&
+    config.runtime.allowSend &&
+    config.runtime.allowRemoteDraftSync;
   const mutationEmailId = process.env.PROTONMAIL_SMOKE_MUTATION_EMAIL_ID;
   const unique = new Date().toISOString().replace(/[:.]/g, "-");
 
@@ -271,11 +278,15 @@ async function main(): Promise<void> {
       messageId: updatedReplyDraft.draftMessageId,
       attachments: updatedReplyDraft.attachments,
     });
-    const replyRemoteDraft = await imapService.upsertRemoteDraft({
-      raw: replyRaw,
-      messageId: updatedReplyDraft.draftMessageId,
-    });
-    const syncedReplyDraft = await draftStore.markRemoteSynced(updatedReplyDraft.id, replyRemoteDraft);
+    let replyRemoteDraft: Awaited<ReturnType<typeof imapService.upsertRemoteDraft>> | undefined;
+    let syncedReplyDraft = updatedReplyDraft;
+    if (allowMutations) {
+      replyRemoteDraft = await imapService.upsertRemoteDraft({
+        raw: replyRaw,
+        messageId: updatedReplyDraft.draftMessageId,
+      });
+      syncedReplyDraft = await draftStore.markRemoteSynced(updatedReplyDraft.id, replyRemoteDraft);
+    }
 
     const composeDraft = await draftStore.createDraft({
       mode: "compose",
@@ -299,53 +310,62 @@ async function main(): Promise<void> {
       messageId: composeDraft.draftMessageId,
       attachments: composeDraft.attachments,
     });
-    const composeRemoteDraft = await imapService.upsertRemoteDraft({
-      raw: composeRaw,
-      messageId: composeDraft.draftMessageId,
-    });
-    const syncedComposeDraft = await draftStore.markRemoteSynced(composeDraft.id, composeRemoteDraft);
+    let composeRemoteDraft: Awaited<ReturnType<typeof imapService.upsertRemoteDraft>> | undefined;
+    let syncedComposeDraft = composeDraft;
+    let composeSend: Awaited<ReturnType<typeof smtpService.sendEmail>> | undefined;
+    let sentComposeDraft = composeDraft;
+    let forwardSend: Awaited<ReturnType<typeof smtpService.sendEmail>> | undefined;
+    let replyThreadEmailIds: string[] = [];
 
-    const composeSend = await smtpService.sendEmail({
-      to: syncedComposeDraft.to,
-      cc: syncedComposeDraft.cc,
-      bcc: syncedComposeDraft.bcc,
-      subject: syncedComposeDraft.subject,
-      body: syncedComposeDraft.body,
-      isHtml: syncedComposeDraft.isHtml,
-      inReplyTo: syncedComposeDraft.inReplyTo,
-      references: syncedComposeDraft.references,
-      attachments: syncedComposeDraft.attachments,
-    });
+    if (allowMutations) {
+      composeRemoteDraft = await imapService.upsertRemoteDraft({
+        raw: composeRaw,
+        messageId: composeDraft.draftMessageId,
+      });
+      syncedComposeDraft = await draftStore.markRemoteSynced(composeDraft.id, composeRemoteDraft);
 
-    let sentComposeDraft = await draftStore.markSent(syncedComposeDraft.id, {
-      messageId: composeSend.messageId,
-      accepted: composeSend.accepted,
-      rejected: composeSend.rejected,
-      response: composeSend.response,
-    });
-    if (sentComposeDraft.remoteDraft?.emailId) {
-      await imapService.deleteRemoteDraft(sentComposeDraft.remoteDraft.emailId);
-      sentComposeDraft = await draftStore.clearRemoteSync(sentComposeDraft.id);
-    }
+      composeSend = await smtpService.sendEmail({
+        to: syncedComposeDraft.to,
+        cc: syncedComposeDraft.cc,
+        bcc: syncedComposeDraft.bcc,
+        subject: syncedComposeDraft.subject,
+        body: syncedComposeDraft.body,
+        isHtml: syncedComposeDraft.isHtml,
+        inReplyTo: syncedComposeDraft.inReplyTo,
+        references: syncedComposeDraft.references,
+        attachments: syncedComposeDraft.attachments,
+      });
 
-    const forwardSend = await smtpService.sendEmail({
-      to: [forwardTo],
-      subject: prefixedSubject(replyTarget.subject, "Fwd:"),
-      body: buildForwardText(replyTarget, "Forward smoke check."),
-      isHtml: false,
-    });
+      sentComposeDraft = await draftStore.markSent(syncedComposeDraft.id, {
+        messageId: composeSend.messageId,
+        accepted: composeSend.accepted,
+        rejected: composeSend.rejected,
+        response: composeSend.response,
+      });
+      if (sentComposeDraft.remoteDraft?.emailId) {
+        await imapService.deleteRemoteDraft(sentComposeDraft.remoteDraft.emailId);
+        sentComposeDraft = await draftStore.clearRemoteSync(sentComposeDraft.id);
+      }
 
-    const replyThreadEmailIds = [...new Set(replyThread.messages.map((message) => message.primaryEmailId))];
-    for (const emailId of replyThreadEmailIds) {
-      await imapService.starEmail(emailId, true);
-    }
-    for (const emailId of replyThreadEmailIds) {
-      await imapService.starEmail(emailId, false);
-    }
+      forwardSend = await smtpService.sendEmail({
+        to: [forwardTo],
+        subject: prefixedSubject(replyTarget.subject, "Fwd:"),
+        body: buildForwardText(replyTarget, "Forward smoke check."),
+        isHtml: false,
+      });
 
-    if (syncedReplyDraft.remoteDraft?.emailId) {
-      await imapService.deleteRemoteDraft(syncedReplyDraft.remoteDraft.emailId);
-      await draftStore.clearRemoteSync(syncedReplyDraft.id);
+      replyThreadEmailIds = [...new Set(replyThread.messages.map((message) => message.primaryEmailId))];
+      for (const emailId of replyThreadEmailIds) {
+        await imapService.starEmail(emailId, true);
+      }
+      for (const emailId of replyThreadEmailIds) {
+        await imapService.starEmail(emailId, false);
+      }
+
+      if (syncedReplyDraft.remoteDraft?.emailId) {
+        await imapService.deleteRemoteDraft(syncedReplyDraft.remoteDraft.emailId);
+        await draftStore.clearRemoteSync(syncedReplyDraft.id);
+      }
     }
 
     const attachmentSample = await imapService.searchEmails({ hasAttachment: true, limit: 10 });
@@ -458,20 +478,22 @@ async function main(): Promise<void> {
             threadId: replyThread.id,
             targetEmailId: replyTarget.id,
             createdDraftId: replyDraft.id,
-            remoteDraftEmailId: replyRemoteDraft.emailId,
+            remoteDraftEmailId: replyRemoteDraft?.emailId ?? null,
             deletedDraft: deletedReplyDraft.removed,
           },
           composeDraft: {
             createdDraftId: composeDraft.id,
-            remoteDraftEmailId: composeRemoteDraft.emailId,
-            sentMessageId: composeSend.messageId,
+            remoteDraftEmailId: composeRemoteDraft?.emailId ?? null,
+            sentMessageId: composeSend?.messageId ?? null,
             deletedDraft: deletedComposeDraft.removed,
           },
-          forward: {
-            to: forwardTo,
-            sourceEmailId: replyTarget.id,
-            messageId: forwardSend.messageId,
-          },
+          forward: allowMutations
+            ? {
+                to: forwardTo,
+                sourceEmailId: replyTarget.id,
+                messageId: forwardSend?.messageId ?? null,
+              }
+            : { skipped: true, reason: "mutations disabled" },
           threadActions: {
             threadId: replyThread.id,
             starredThenUnstarred: replyThreadEmailIds.length,
@@ -480,6 +502,9 @@ async function main(): Promise<void> {
             listed: remoteDrafts.emails.length,
           },
           attachments: attachmentBatch || { skipped: true },
+          sendAndRemoteSync: allowMutations
+            ? { performed: true }
+            : { skipped: true, reason: "mutations disabled (requires PROTONMAIL_SMOKE_ALLOW_MUTATIONS=true, PROTONMAIL_READ_ONLY=false, PROTONMAIL_ALLOW_SEND=true, PROTONMAIL_ALLOW_REMOTE_DRAFT_SYNC=true)" },
           mutations: allowMutations && mutationEmailId
             ? {
                 archiveTarget: archiveResult?.targetEmailId,
