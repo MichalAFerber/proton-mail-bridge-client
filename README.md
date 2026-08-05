@@ -510,6 +510,24 @@ PROTONMAIL_IDLE_MAX_SECONDS='30'
 
 ---
 
+## Using it as a library
+
+Beyond the CLI and MCP server, the underlying service classes are importable directly:
+
+```ts
+import { SimpleIMAPService, SMTPService } from "proton-mail-bridge-client/services";
+
+const imapService = new SimpleIMAPService(config, logger);
+const smtpService = new SMTPService(config);
+```
+
+`proton-mail-bridge-client/services` has no side effects on import — unlike the package's
+main entry point, which also self-starts the MCP server when run directly. Also exported:
+all shared types (`ProtonMailConfig`, `EmailSummary`, `EmailDetail`, …), `planFolderSync`,
+`isLikelyAuthenticationError`, and `sanitizeHeader`.
+
+---
+
 ## Operational notes
 
 - `get_emails` and `search_emails` return a composite `emailId` — use it for all subsequent reads and actions.

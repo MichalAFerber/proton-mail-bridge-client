@@ -7,6 +7,7 @@
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
+    "./services": "./dist/lib.js",
     "./package.json": "./package.json"
   },
   "bin": {
