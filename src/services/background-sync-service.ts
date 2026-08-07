@@ -7,6 +7,10 @@ const AUTH_BACKOFF_MIN_MS = 5 * 60_000;
 const AUTH_BACKOFF_MAX_MS = 30 * 60_000;
 const TRANSIENT_BACKOFF_MIN_MS = 15_000;
 const TRANSIENT_BACKOFF_MAX_MS = 2 * 60_000;
+// Minimum wall-clock time a change-free IDLE watch iteration must occupy. Acts
+// as a hard floor so the idle loop can never busy-spin, independent of how the
+// underlying IMAP client behaves.
+const IDLE_ITERATION_FLOOR_MS = 1_000;
 
 export class BackgroundSyncService {
   private readonly status: BackgroundSyncStatus;
@@ -193,6 +197,7 @@ export class BackgroundSyncService {
       let failCount = 0;
       while (this.started && this.status.enabled && this.status.idleEnabled && this.status.folder) {
         this.status.idleWatching = true;
+        const iterationStartedAt = Date.now();
         try {
           const result = await this.imapService.waitForMailboxChanges({
             folder: this.status.folder,
@@ -205,6 +210,13 @@ export class BackgroundSyncService {
             this.status.lastIdleChangeAt = result.checkedAt;
             this.status.lastIdleEventCount = result.events.length;
             await this.runNow("idle");
+          } else {
+            // Backstop against a busy spin: a change-free watch cycle should have
+            // spent roughly idleMaxSeconds blocking in IDLE. If it returned far
+            // sooner (a no-op idle(), a fast-failing reconnect, or any future
+            // library regression), enforce a floor so this loop can never peg a
+            // CPU core the way an orphaned process once did.
+            await this.enforceIdleFloor(iterationStartedAt);
           }
         } catch (error) {
           this.status.lastIdleError = error instanceof Error ? error.message : String(error);
@@ -228,6 +240,14 @@ export class BackgroundSyncService {
       this.status.idleWatching = false;
       this.idleLoop = undefined;
     })();
+  }
+
+  private async enforceIdleFloor(iterationStartedAt: number): Promise<void> {
+    const elapsed = Date.now() - iterationStartedAt;
+    const remaining = IDLE_ITERATION_FLOOR_MS - elapsed;
+    if (remaining > 0) {
+      await this.waitForRetry(remaining);
+    }
   }
 
   private async waitForRetry(delayMs: number): Promise<void> {
