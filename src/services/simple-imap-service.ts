@@ -1876,8 +1876,16 @@ export class SimpleIMAPService {
         };
       }
 
+      // On an unchanged incremental window (nothing new, checkpoint still matches),
+      // the overlap range only needs a flags refresh — IMAP content for a given UID
+      // never changes, so re-fetching source and re-parsing preview/attachmentText
+      // on every idle sync tick is pure waste. recordSnapshot's upsert preserves the
+      // existing preview/attachment_text via COALESCE when they come back unset here.
+      const needsFullDetail = plan.strategy !== "incremental_window";
+      const fetchQuery = needsFullDetail ? FETCH_INDEX_DETAIL_QUERY : FETCH_INDEX_QUERY;
+
       const emails: EmailSummary[] = [];
-      for await (const message of client.fetch(`${plan.startUid}:${plan.endUid}`, FETCH_INDEX_DETAIL_QUERY, { uid: true })) {
+      for await (const message of client.fetch(`${plan.startUid}:${plan.endUid}`, fetchQuery, { uid: true })) {
         const summary = this.toSummary(folder, message);
         const enriched = message.source
           ? this.enrichSummaryFromParsed(summary, await this.parseSource(message.source), input.includeAttachmentText)

@@ -363,6 +363,76 @@ test("indexed search supports domain and label normalization shortcuts", async (
   }
 });
 
+test("recordSnapshot preserves preview/attachmentText across a flags-only re-sync of the same UID", async () => {
+  // Reproduces the "cheapen the no-change sync cycle" fix: an unchanged incremental
+  // window re-syncs with no message source fetched, so preview/attachmentText come
+  // back unset. That must NOT wipe out the values a prior full sync already indexed
+  // — IMAP content for a fixed UID is immutable, only flags change.
+  const dataDir = await mkdtemp(join(tmpdir(), "protonmail-coalesce-test-"));
+  const service = new LocalIndexService(createConfig(dataDir));
+
+  const folderInfo = {
+    path: "INBOX",
+    name: "INBOX",
+    delimiter: "/",
+    specialUse: "\\Inbox",
+    listed: true,
+    subscribed: true,
+    flags: [],
+    messages: 1,
+    unseen: 1,
+  };
+  const baseEmail = {
+    id: "INBOX::40",
+    folder: "INBOX",
+    uid: 40,
+    seq: 40,
+    messageId: "<x@example.com>",
+    subject: "Quarterly report",
+    from: [{ address: "person@example.com" }],
+    to: [{ address: "owner@example.com" }],
+    cc: [],
+    bcc: [],
+    replyTo: [],
+    date: "2026-03-25T09:00:00.000Z",
+    internalDate: "2026-03-25T09:00:00.000Z",
+    isRead: false,
+    isStarred: false,
+    flags: [],
+    hasAttachments: false,
+    attachments: [],
+    labels: [],
+  };
+
+  try {
+    // First sync: full detail fetch, preview and attachmentText populated.
+    await service.recordSnapshot({
+      syncedAt: "2026-03-25T10:00:00.000Z",
+      folders: [folderInfo],
+      folderStats: [{ folder: "INBOX", fetched: 1, total: 1, strategy: "recent" }],
+      emails: [{ ...baseEmail, preview: "Attached is the quarterly report", attachmentText: "revenue figures" }],
+    });
+
+    // Second sync: an unchanged incremental_window cycle — flags-only fetch, so
+    // preview/attachmentText are undefined on the incoming row (only isRead flips).
+    await service.recordSnapshot({
+      syncedAt: "2026-03-25T10:05:00.000Z",
+      folders: [folderInfo],
+      folderStats: [{ folder: "INBOX", fetched: 1, total: 1, strategy: "incremental_window" }],
+      emails: [{ ...baseEmail, isRead: true, preview: undefined, attachmentText: undefined }],
+    });
+
+    const result = await service.search({ query: undefined, folder: "INBOX", limit: 10 });
+    const stored = result.emails.find((email) => email.id === "INBOX::40");
+
+    assert.ok(stored);
+    assert.equal(stored.isRead, true, "flags-only sync should still update isRead");
+    assert.equal(stored.preview, "Attached is the quarterly report", "preview must survive a flags-only re-sync");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("search surfaces a warning instead of silently returning empty when the query has no searchable terms", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "protonmail-search-warning-test-"));
   const service = new LocalIndexService(createConfig(dataDir));

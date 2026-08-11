@@ -1106,7 +1106,7 @@ const TOOLS = [
   },
   {
     name: "run_doctor",
-    description: "Run a comprehensive production health check covering SMTP auth, IMAP auth, optional IMAP IDLE probe, SQLite index integrity, and runtime policy validation. Use to fully diagnose or validate the setup. Prefer get_connection_status for a quick protocol-only reachability check.",
+    description: "Run a comprehensive production health check covering SMTP auth, IMAP auth, optional IMAP IDLE probe, SQLite index integrity, sync-failed drafts, runtime policy validation, and what this server can/cannot do (capabilities). Connection failures include a classified diagnosis (authentication_failed vs bridge_unreachable) with a specific fix. Use to fully diagnose or validate the setup. Prefer get_connection_status for a quick protocol-only reachability check.",
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
@@ -4325,7 +4325,7 @@ export function createServer(
           const includeImap = normalizeBoolean(args.includeImap, true);
           const includeIdleProbe = normalizeBoolean(args.includeIdleProbe, false);
           const idleTimeoutSeconds = normalizeLimit(args.idleTimeoutSeconds, 5, 1, 60);
-          const [smtpStatus, imapStatus, indexStatus, integrity] = await Promise.all([
+          const [smtpStatus, imapStatus, indexStatus, integrity, drafts] = await Promise.all([
             includeSmtp
               ? Promise.allSettled([smtpService.verifyConnection()]).then(([result]) => result)
               : Promise.resolve({ status: "fulfilled", value: undefined } as const),
@@ -4334,6 +4334,7 @@ export function createServer(
               : Promise.resolve({ status: "fulfilled", value: undefined } as const),
             localIndexService.getStatus(),
             localIndexService.runIntegrityCheck(),
+            draftStore.listDrafts(true),
           ]);
 
           const idleProbe = includeIdleProbe
@@ -4344,6 +4345,29 @@ export function createServer(
                 }),
               ]).then(([result]) => result)
             : undefined;
+
+          // Classifies the connection failure into a specific, actionable cause —
+          // without PROTONMAIL_DEBUG this used to just say "connection failed" for
+          // both a wrong password and Bridge not being open at all.
+          const diagnoseFailure = (
+            reason: unknown,
+          ): { cause: string; suggestion: string } | undefined => {
+            if (isLikelyAuthenticationError(reason)) {
+              return {
+                cause: "authentication_failed",
+                suggestion:
+                  "PROTONMAIL_PASSWORD must be the Proton Bridge password (Bridge app -> account -> Mailbox details), not your Proton account password. Confirm you're signed in inside the Bridge app.",
+              };
+            }
+            if (isLikelyConnectionError(reason)) {
+              return {
+                cause: "bridge_unreachable",
+                suggestion:
+                  "Proton Bridge isn't reachable on the configured host/port. Make sure the Bridge app is running, and that PROTONMAIL_IMAP_HOST/PORT and PROTONMAIL_SMTP_HOST/PORT match Bridge's Mailbox details.",
+              };
+            }
+            return undefined;
+          };
 
           return createTextResult({
             checkedAt: new Date().toISOString(),
@@ -4359,6 +4383,7 @@ export function createServer(
                       ? smtpStatus.reason.message
                       : String(smtpStatus.reason)
                     : "SMTP connection failed.",
+              ...(smtpStatus.status === "rejected" ? { diagnosis: diagnoseFailure(smtpStatus.reason) } : {}),
             },
             imap: {
               ok: imapStatus.status === "fulfilled",
@@ -4372,6 +4397,7 @@ export function createServer(
                       ? imapStatus.reason.message
                       : String(imapStatus.reason)
                     : "IMAP connection failed.",
+              ...(imapStatus.status === "rejected" ? { diagnosis: diagnoseFailure(imapStatus.reason) } : {}),
             },
             idleProbe:
               idleProbe === undefined
@@ -4389,8 +4415,27 @@ export function createServer(
             backgroundSync: backgroundSyncService.getStatus(),
             index: indexStatus,
             integrity,
+            drafts: {
+              total: drafts.length,
+              syncFailed: drafts.filter((draft) => draft.remoteSyncState === "sync_failed").length,
+              syncFailedIds: drafts
+                .filter((draft) => draft.remoteSyncState === "sync_failed")
+                .map((draft) => draft.id),
+            },
             audit: {
               path: auditService.getPath(),
+            },
+            // What this server can and cannot do, given Proton Bridge only proxies
+            // local IMAP/SMTP — prevents an agent from attempting an impossible
+            // operation (e.g. server-side filters) and getting a confusing failure.
+            capabilities: {
+              supported: ["mail read/search/send", "folders", "labels (IMAP folders under Labels/)", "drafts", "local full-text index"],
+              notSupported: [
+                "server-side filters/rules (no ManageSieve access through Bridge)",
+                "real contacts / address book (no CardDAV access through Bridge)",
+                "calendar (no CalDAV access through Bridge)",
+                "vacation responder (Proton account API only, not exposed via Bridge)",
+              ],
             },
           });
         }

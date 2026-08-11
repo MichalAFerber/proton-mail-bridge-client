@@ -1230,10 +1230,14 @@ export class LocalIndexService {
         is_starred = excluded.is_starred,
         flags_json = excluded.flags_json,
         size = excluded.size,
-        preview = excluded.preview,
+        -- A cheap flags-only sync (no message source fetched) leaves preview/
+        -- attachment_text unset on the incoming row. IMAP content for a fixed
+        -- UID is immutable — only flags change — so preserving the existing
+        -- indexed value here is always correct, never stale.
+        preview = COALESCE(excluded.preview, messages.preview),
         has_attachments = excluded.has_attachments,
         attachments_json = excluded.attachments_json,
-        attachment_text = excluded.attachment_text,
+        attachment_text = COALESCE(excluded.attachment_text, messages.attachment_text),
         labels_json = excluded.labels_json
     `);
     const upsertSyncState = db.prepare(`

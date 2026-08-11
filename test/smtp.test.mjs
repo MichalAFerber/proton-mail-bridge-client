@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeHeader } from "../dist/services/smtp-service.js";
+import { sanitizeHeader, SMTPService } from "../dist/services/smtp-service.js";
 
 test("sanitizeHeader replaces CR and LF with spaces", () => {
   assert.equal(sanitizeHeader("hello\r\nBcc: evil"), "hello  Bcc: evil");
@@ -8,4 +8,118 @@ test("sanitizeHeader replaces CR and LF with spaces", () => {
 
 test("sanitizeHeader leaves normal headers unchanged", () => {
   assert.equal(sanitizeHeader("normal subject"), "normal subject");
+});
+
+function createConfig() {
+  return {
+    smtp: {
+      host: "127.0.0.1",
+      port: 1025,
+      secure: false,
+      username: "owner@example.com",
+      password: "secret",
+    },
+    imap: { host: "127.0.0.1", port: 1143, secure: false, username: "owner@example.com", password: "secret" },
+    dataDir: "/tmp/protonmail-pro-mcp-test",
+    debug: false,
+    cacheEnabled: true,
+    analyticsEnabled: true,
+    autoSync: false,
+    syncInterval: 5,
+    runtime: {
+      readOnly: false,
+      allowSend: true,
+      allowRemoteDraftSync: true,
+      allowedActions: [],
+      startupSync: false,
+      autoSyncFolder: "INBOX",
+      autoSyncFull: false,
+      autoSyncLimitPerFolder: 25,
+      idleWatchEnabled: false,
+      idleMaxSeconds: 30,
+      confirmDestructive: false,
+      allowEmptyFolder: false,
+      restrictOutboundToSelf: false,
+      allowFileDownloadDir: undefined,
+      maxInlineBytes: 40960,
+      opDelayMs: 0,
+    },
+  };
+}
+
+// buildRawMessage compiles a full RFC822 message locally via nodemailer's
+// MailComposer — no network/transporter involved, so it's a safe way to
+// exercise buildMailOptions' header-sanitization and HTML-sanitization
+// logic without a live SMTP connection.
+test("buildRawMessage neutralizes CRLF header injection from subject and fromName", async () => {
+  // sanitizeHeader replaces CR/LF with a space rather than deleting the text, so the
+  // injected text still appears — the security property is that it stays confined
+  // inside the Subject:/From: line and never becomes its own standalone MIME header.
+  const service = new SMTPService(createConfig());
+  const raw = await service.buildRawMessage({
+    to: ["victim@example.com"],
+    subject: "Hello\r\nBcc: attacker@evil.com",
+    fromName: "Attacker\r\nX-Injected: true",
+    body: "plain text body",
+  });
+  const headerBlock = raw.toString("utf8").split("\r\n\r\n")[0];
+  const headerLines = headerBlock.split("\r\n");
+
+  assert.ok(!headerLines.some((line) => /^bcc:/i.test(line.trim())));
+  assert.ok(!headerLines.some((line) => /^x-injected:/i.test(line.trim())));
+  assert.ok(headerLines.some((line) => /^subject: hello/i.test(line.trim())));
+});
+
+test("buildRawMessage sanitizes script tags out of HTML bodies by default", async () => {
+  const service = new SMTPService(createConfig());
+  const raw = await service.buildRawMessage({
+    to: ["victim@example.com"],
+    subject: "HTML test",
+    body: "fallback text",
+    isHtml: true,
+    htmlBody: '<p>hello</p><script>alert("xss")</script>',
+  });
+  const message = raw.toString("utf8");
+
+  assert.ok(!message.includes("<script>"));
+  assert.ok(message.includes("hello"));
+});
+
+test("buildRawMessage respects PROTONMAIL_ALLOW_UNSAFE_HTML=true plus explicit sanitizeHtml:false", async () => {
+  const previous = process.env.PROTONMAIL_ALLOW_UNSAFE_HTML;
+  process.env.PROTONMAIL_ALLOW_UNSAFE_HTML = "true";
+  try {
+    const service = new SMTPService(createConfig());
+    const raw = await service.buildRawMessage({
+      to: ["victim@example.com"],
+      subject: "HTML test",
+      body: "fallback text",
+      isHtml: true,
+      htmlBody: "<p>hello</p><b>bold</b>",
+      sanitizeHtml: false,
+    });
+    const message = raw.toString("utf8");
+    assert.ok(message.includes("<b>bold</b>"));
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PROTONMAIL_ALLOW_UNSAFE_HTML;
+    } else {
+      process.env.PROTONMAIL_ALLOW_UNSAFE_HTML = previous;
+    }
+  }
+});
+
+test("buildRawMessage round-trips a base64 attachment", async () => {
+  const service = new SMTPService(createConfig());
+  const content = Buffer.from("attachment body").toString("base64");
+  const raw = await service.buildRawMessage({
+    to: ["victim@example.com"],
+    subject: "Attachment test",
+    body: "see attached",
+    attachments: [{ filename: "note.txt", content, contentType: "text/plain" }],
+  });
+  const message = raw.toString("utf8");
+
+  assert.ok(message.includes("note.txt"));
+  assert.ok(message.includes(content) || message.includes("attachment body"));
 });
