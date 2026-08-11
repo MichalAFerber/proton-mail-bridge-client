@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { pickNewestUids, planFolderSync, SimpleIMAPService } from "../dist/services/simple-imap-service.js";
+import {
+  isLikelyAuthenticationError,
+  isLikelyConnectionError,
+  mapHeaderValue,
+  pickNewestUids,
+  planFolderSync,
+  SimpleIMAPService,
+} from "../dist/services/simple-imap-service.js";
 
 function createConfig() {
   return {
@@ -127,6 +134,55 @@ test("emptyFolder rejects INBOX before making IMAP calls", async () => {
     /cannot be used on INBOX/i,
   );
   assert.equal(connectCalls, 0);
+});
+
+test("isLikelyAuthenticationError and isLikelyConnectionError classify errors correctly", () => {
+  const authError = new Error("Incorrect login credentials.");
+  assert.equal(isLikelyAuthenticationError(authError), true);
+  assert.equal(isLikelyConnectionError(authError), false);
+
+  const connError = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1143"), { code: "ECONNREFUSED" });
+  assert.equal(isLikelyConnectionError(connError), true);
+  assert.equal(isLikelyAuthenticationError(connError), false);
+
+  const unrelated = new Error("Folder does not exist");
+  assert.equal(isLikelyAuthenticationError(unrelated), false);
+  assert.equal(isLikelyConnectionError(unrelated), false);
+
+  assert.equal(isLikelyAuthenticationError(undefined), false);
+  assert.equal(isLikelyConnectionError(undefined), false);
+});
+
+test("mapHeaderValue never produces the literal string '[object Object]'", () => {
+  // Reproduces the reported bug: mailparser structures from/to/list/content-type/
+  // dkim-signature as objects, and a blind String(value) stringified them all to
+  // the useless literal "[object Object]".
+  const addressHeader = {
+    value: [{ name: "Alice", address: "alice@example.com" }],
+    html: '<span class="mp_label_from">Alice &lt;alice@example.com&gt;</span>',
+    text: "Alice <alice@example.com>",
+  };
+  assert.equal(mapHeaderValue(addressHeader), "Alice <alice@example.com>");
+
+  const contentType = { value: "text/html", params: { charset: "utf-8" } };
+  assert.equal(mapHeaderValue(contentType), "text/html; charset=utf-8");
+
+  const dkimSignature = { value: "", params: { v: "1", a: "rsa-sha256" } };
+  const dkimResult = mapHeaderValue(dkimSignature);
+  assert.ok(!String(dkimResult).includes("[object Object]"));
+
+  const listHeader = {
+    unsubscribe: { url: "https://example.com/unsub", mail: "unsub@example.com" },
+    id: { value: "list.example.com" },
+  };
+  const listResult = mapHeaderValue(listHeader);
+  assert.equal(listResult.unsubscribe.url, "https://example.com/unsub");
+  assert.ok(!JSON.stringify(listResult).includes("[object Object]"));
+
+  // Plain strings, arrays of strings, and Dates must pass through untouched or ISO-formatted.
+  assert.equal(mapHeaderValue("plain-string"), "plain-string");
+  assert.deepEqual(mapHeaderValue(["a", "b"]), ["a", "b"]);
+  assert.equal(typeof mapHeaderValue(new Date()), "string");
 });
 
 test("pickNewestUids picks by date, not by UID order (GitHub issue #6)", () => {

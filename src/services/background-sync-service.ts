@@ -188,19 +188,26 @@ export class BackgroundSyncService {
     this.timer.unref?.();
   }
 
+  // autoSyncFolder is a comma-separated list ("INBOX,Sent") for the periodic index
+  // sync, but IMAP IDLE can only watch a single mailbox per connection — always
+  // watch the first entry (INBOX by default) for live updates.
+  private get primaryIdleFolder(): string | undefined {
+    return this.status.folder?.split(",")[0]?.trim() || undefined;
+  }
+
   private startIdleLoop(): void {
-    if (this.idleLoop || !this.status.idleEnabled || !this.status.folder) {
+    if (this.idleLoop || !this.status.idleEnabled || !this.primaryIdleFolder) {
       return;
     }
 
     this.idleLoop = (async () => {
       let failCount = 0;
-      while (this.started && this.status.enabled && this.status.idleEnabled && this.status.folder) {
+      while (this.started && this.status.enabled && this.status.idleEnabled && this.primaryIdleFolder) {
         this.status.idleWatching = true;
         const iterationStartedAt = Date.now();
         try {
           const result = await this.imapService.waitForMailboxChanges({
-            folder: this.status.folder,
+            folder: this.primaryIdleFolder,
             timeoutMs: this.status.idleMaxSeconds * 1000,
           });
           failCount = 0;
@@ -222,7 +229,7 @@ export class BackgroundSyncService {
           this.status.lastIdleError = error instanceof Error ? error.message : String(error);
           const failureKind = isLikelyAuthenticationError(error) ? "auth" : "transient";
           this.log.warn("Mailbox IDLE watch failed", "BackgroundSyncService", {
-            folder: this.status.folder,
+            folder: this.primaryIdleFolder,
             failureKind,
             error,
           });

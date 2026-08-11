@@ -79,6 +79,27 @@ test("buildConfigFromEnv reads *_FILE secrets and runtime policy flags", async (
   }
 });
 
+test("buildConfigFromEnv defaults autoSyncFolder to INBOX,Sent so digest/follow-up don't misreport answered threads", () => {
+  const previous = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
+
+  try {
+    process.env.PROTONMAIL_USERNAME = "owner@example.com";
+    process.env.PROTONMAIL_PASSWORD = "bridge-secret";
+    delete process.env.PROTONMAIL_AUTO_SYNC_FOLDER;
+
+    const config = buildConfigFromEnv();
+    assert.equal(config.runtime.autoSyncFolder, "INBOX,Sent");
+  } finally {
+    for (const key of KEYS) {
+      if (previous[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = previous[key];
+      }
+    }
+  }
+});
+
 test("buildConfigFromEnv reads *_COMMAND secrets", () => {
   const previous = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
 

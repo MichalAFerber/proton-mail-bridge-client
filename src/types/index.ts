@@ -98,7 +98,10 @@ export interface EmailSummary {
 export interface EmailDetail extends EmailSummary {
   text?: string;
   html?: string | false;
-  headers: Record<string, string | string[]>;
+  // Values are usually string | string[], but a few headers (list, and any
+  // future unrecognized structured header) are kept as nested objects rather
+  // than flattened — see SimpleIMAPService.mapHeaderValue.
+  headers: Record<string, unknown>;
 }
 
 export type DraftMode = "compose" | "reply" | "forward";

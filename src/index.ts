@@ -21,7 +21,7 @@ import { AuditService } from "./services/audit-service.js";
 import { BackgroundSyncService } from "./services/background-sync-service.js";
 import { DraftStoreService } from "./services/draft-store-service.js";
 import { LocalIndexService } from "./services/local-index-service.js";
-import { SimpleIMAPService } from "./services/simple-imap-service.js";
+import { isLikelyAuthenticationError, isLikelyConnectionError, SimpleIMAPService } from "./services/simple-imap-service.js";
 import { SMTPService } from "./services/smtp-service.js";
 import type {
   BatchActionEntry,
@@ -2659,7 +2659,10 @@ export function buildConfigFromEnv(): ProtonMailConfig {
       allowRemoteDraftSync,
       allowedActions: parseAllowedActionsEnv("PROTONMAIL_ALLOWED_ACTIONS"),
       startupSync: parseBooleanEnv("PROTONMAIL_STARTUP_SYNC", autoSync),
-      autoSyncFolder: process.env.PROTONMAIL_AUTO_SYNC_FOLDER?.trim() || "INBOX",
+      // Comma-separated; Sent is included by default so pendingOn/digest/follow-up
+      // candidates don't misreport threads that were already answered — IDLE still
+      // only watches the first folder (see BackgroundSyncService.primaryIdleFolder).
+      autoSyncFolder: process.env.PROTONMAIL_AUTO_SYNC_FOLDER?.trim() || "INBOX,Sent",
       autoSyncFull: parseBooleanEnv("PROTONMAIL_AUTO_SYNC_FULL", false),
       autoSyncLimitPerFolder: parseIntegerEnv("PROTONMAIL_AUTO_SYNC_LIMIT_PER_FOLDER", 100, 1, 500),
       idleWatchEnabled,
@@ -5010,9 +5013,21 @@ export function createServer(
         throw error;
       }
       logger.error("Tool call failed", "MCPServer", { name, error });
+      if (isLikelyAuthenticationError(error)) {
+        throw new McpError(
+          ErrorCode.InternalError,
+          "IMAP authentication failed. Check that PROTONMAIL_PASSWORD is your Proton Bridge password (not your Proton account password) and that you're signed in inside the Bridge app. Run run_doctor for a full connectivity check.",
+        );
+      }
+      if (isLikelyConnectionError(error)) {
+        throw new McpError(
+          ErrorCode.InternalError,
+          "Could not connect to Proton Bridge. Make sure the Bridge app is running, and that PROTONMAIL_IMAP_HOST/PORT and PROTONMAIL_SMTP_HOST/PORT match the ports shown in Bridge's settings. Run run_doctor for a full connectivity check.",
+        );
+      }
       throw new McpError(
         ErrorCode.InternalError,
-        "An internal error occurred. Check get_logs for details.",
+        "An internal error occurred. Check get_logs for details, or run run_doctor for a full connectivity check.",
       );
     }
   });

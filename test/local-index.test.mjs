@@ -357,6 +357,66 @@ test("indexed search supports domain and label normalization shortcuts", async (
 
     assert.equal(result.total, 1);
     assert.equal(result.emails[0].id, "INBOX::21");
+    assert.equal(result.warnings, undefined);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("search surfaces a warning instead of silently returning empty when the query has no searchable terms", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "protonmail-search-warning-test-"));
+  const service = new LocalIndexService(createConfig(dataDir));
+
+  try {
+    await service.recordSnapshot({
+      syncedAt: "2026-03-25T10:00:00.000Z",
+      folders: [
+        {
+          path: "INBOX",
+          name: "INBOX",
+          delimiter: "/",
+          specialUse: "\\Inbox",
+          listed: true,
+          subscribed: true,
+          flags: [],
+          messages: 1,
+          unseen: 0,
+        },
+      ],
+      folderStats: [{ folder: "INBOX", fetched: 1, total: 1, strategy: "recent" }],
+      emails: [
+        {
+          id: "INBOX::30",
+          folder: "INBOX",
+          uid: 30,
+          seq: 30,
+          messageId: "<a@example.com>",
+          subject: "Not an update",
+          from: [{ address: "person@example.com" }],
+          to: [{ address: "owner@example.com" }],
+          cc: [],
+          bcc: [],
+          replyTo: [],
+          date: "2026-03-25T09:00:00.000Z",
+          internalDate: "2026-03-25T09:00:00.000Z",
+          isRead: false,
+          isStarred: false,
+          flags: [],
+          preview: "Nothing relevant here",
+          hasAttachments: false,
+          attachments: [],
+          labels: [],
+        },
+      ],
+    });
+
+    // Every token is either a bare FTS5 operator or a leading-hyphen negation, so
+    // no safe search term survives — this must warn, not silently return empty.
+    const result = await service.search({ query: "NOT AND -foo", limit: 10 });
+
+    assert.equal(result.total, 0);
+    assert.ok(Array.isArray(result.warnings) && result.warnings.length === 1);
+    assert.match(result.warnings[0], /no searchable terms/i);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

@@ -65,6 +65,15 @@ const FETCH_INDEX_QUERY = {
   bodyStructure: true,
 } as const;
 
+// Indexing needs the message source to populate preview/attachmentText for FTS body
+// search — collectFolderForIndex previously used FETCH_INDEX_QUERY (no source), so
+// every indexed message's preview and attachmentText silently stayed undefined and
+// search_indexed_emails' body search always returned nothing.
+const FETCH_INDEX_DETAIL_QUERY = {
+  ...FETCH_INDEX_QUERY,
+  source: true,
+} as const;
+
 const MAX_ATTACHMENT_TEXT_BYTES = 512_000;
 // A healthy IMAP IDLE blocks until a mailbox change or the requested timeout.
 // If client.idle() returns faster than this with no events, IDLE never actually
@@ -73,11 +82,7 @@ const MAX_ATTACHMENT_TEXT_BYTES = 512_000;
 const MIN_HEALTHY_IDLE_MS = 500;
 const UID_VALIDITY_MISMATCH_ERROR = "UID validity mismatch - local index is stale, run sync_emails to refresh";
 
-export function isLikelyAuthenticationError(error: unknown): boolean {
-  if (!error) {
-    return false;
-  }
-
+function collectErrorText(error: unknown): string {
   const values: string[] = [];
 
   if (error instanceof Error) {
@@ -87,9 +92,13 @@ export function isLikelyAuthenticationError(error: unknown): boolean {
     if (typeof maybeResponseText === "string") {
       values.push(maybeResponseText);
     }
+    const maybeCode = (error as { code?: unknown }).code;
+    if (typeof maybeCode === "string") {
+      values.push(maybeCode);
+    }
   } else if (typeof error === "string") {
     values.push(error);
-  } else if (typeof error === "object") {
+  } else if (typeof error === "object" && error !== null) {
     const maybeMessage = (error as { message?: unknown }).message;
     const maybeCode = (error as { code?: unknown }).code;
     const maybeResponse = (error as { response?: unknown }).response;
@@ -104,7 +113,15 @@ export function isLikelyAuthenticationError(error: unknown): boolean {
     }
   }
 
-  const haystack = values.join(" ").toLowerCase();
+  return values.join(" ").toLowerCase();
+}
+
+export function isLikelyAuthenticationError(error: unknown): boolean {
+  if (!error) {
+    return false;
+  }
+
+  const haystack = collectErrorText(error);
   if (!haystack) {
     return false;
   }
@@ -117,6 +134,31 @@ export function isLikelyAuthenticationError(error: unknown): boolean {
     "authentication failed",
     "no such user",
     "too many login attempts",
+  ].some((needle) => haystack.includes(needle));
+}
+
+// Distinguishes "Bridge isn't running / wrong host-port" from other failures, so the
+// caller can point the user at Bridge instead of a generic "internal error occurred".
+export function isLikelyConnectionError(error: unknown): boolean {
+  if (!error) {
+    return false;
+  }
+
+  const haystack = collectErrorText(error);
+  if (!haystack) {
+    return false;
+  }
+
+  return [
+    "econnrefused",
+    "enotfound",
+    "etimedout",
+    "ehostunreach",
+    "econnreset",
+    "connect etimedout",
+    "connection closed",
+    "connection timed out",
+    "timed out while connecting",
   ].some((needle) => haystack.includes(needle));
 }
 
@@ -249,6 +291,47 @@ function createParsedAttachmentId(
   index: number,
 ): string {
   return attachment.checksum || attachment.cid || `attachment-${index + 1}`;
+}
+
+// mailparser structures several headers as objects rather than strings:
+//   - from/to/cc/bcc/sender/reply-to/delivered-to/return-path/disposition-notification-to
+//     -> { value: AddressEntry[], html, text }
+//   - content-type/content-disposition/dkim-signature -> { value: string, params: Record<string,string> }
+//   - list (merged from List-Unsubscribe/List-Id/etc.) -> a nested object, kept structured
+//     since callers (e.g. the unsubscribe tool) need list.unsubscribe.url/.mail directly.
+// A blind String(value) on any of these produces the literal string "[object Object]".
+export function mapHeaderValue(value: unknown): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => mapHeaderValue(item));
+  }
+  if (typeof value !== "object") {
+    return String(value);
+  }
+
+  const obj = value as Record<string, unknown>;
+  // Address-type header: prefer the readable "Name <addr>, Name2 <addr2>" text mailparser
+  // already computed over the raw parsed array.
+  if (typeof obj.text === "string" && Array.isArray(obj.value)) {
+    return obj.text;
+  }
+  // content-type / content-disposition / dkim-signature: reconstruct a readable header string.
+  if (typeof obj.value === "string" && obj.params && typeof obj.params === "object") {
+    const params = Object.entries(obj.params as Record<string, unknown>)
+      .map(([paramKey, paramValue]) => `${paramKey}=${String(paramValue)}`)
+      .join("; ");
+    return params ? `${obj.value}; ${params}` : obj.value;
+  }
+  // 'list' and any other unrecognized structured header: keep as a plain nested object
+  // rather than stringifying it away — JSON.stringify renders it correctly downstream.
+  return Object.fromEntries(
+    Object.entries(obj).map(([nestedKey, nestedValue]) => [nestedKey, mapHeaderValue(nestedValue)]),
+  );
 }
 
 export class SimpleIMAPService {
@@ -1794,10 +1877,13 @@ export class SimpleIMAPService {
       }
 
       const emails: EmailSummary[] = [];
-      for await (const message of client.fetch(`${plan.startUid}:${plan.endUid}`, FETCH_INDEX_QUERY, { uid: true })) {
+      for await (const message of client.fetch(`${plan.startUid}:${plan.endUid}`, FETCH_INDEX_DETAIL_QUERY, { uid: true })) {
         const summary = this.toSummary(folder, message);
-        emails.push(summary);
-        this.messageCache.set(summary.id, summary);
+        const enriched = message.source
+          ? this.enrichSummaryFromParsed(summary, await this.parseSource(message.source), input.includeAttachmentText)
+          : summary;
+        emails.push(enriched);
+        this.messageCache.set(enriched.id, enriched);
       }
 
       const highestUid = emails.reduce((max, email) => Math.max(max, email.uid), 0) || plan.highestKnownUid;
@@ -2050,7 +2136,13 @@ export class SimpleIMAPService {
 
   private async resolveFolders(folder?: string): Promise<string[]> {
     if (folder?.trim()) {
-      return [folder.trim()];
+      // Comma-separated list of folder paths, same convention as batch_email_action's
+      // emailIds — lets a single sync/search call scope to e.g. "INBOX,Sent" instead
+      // of only ever a single folder or every folder.
+      return folder
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
     }
 
     const folders = await this.getFolders();
@@ -2313,18 +2405,13 @@ export class SimpleIMAPService {
     }));
   }
 
-  private mapHeaders(parsed?: ParsedMail): Record<string, string | string[]> {
+  private mapHeaders(parsed?: ParsedMail): Record<string, unknown> {
     if (!parsed) {
       return {};
     }
 
     return Object.fromEntries(
-      [...parsed.headers.entries()].map(([key, value]) => {
-        if (Array.isArray(value)) {
-          return [key, value.map((item) => String(item))];
-        }
-        return [key, String(value)];
-      }),
+      [...parsed.headers.entries()].map(([key, value]) => [key, mapHeaderValue(value)]),
     );
   }
 

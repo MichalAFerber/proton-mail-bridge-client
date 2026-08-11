@@ -563,6 +563,7 @@ export class LocalIndexService {
     emails: EmailSummary[];
     lastSyncAt?: string;
     indexFreshnessMinutes?: number;
+    warnings?: string[];
   }> {
     const parsedQuery = parseSearchQuery(filters.query);
     const normalizedFilters: SearchEmailsInput = {
@@ -603,7 +604,8 @@ export class LocalIndexService {
 
     const db = await this.ensureDb();
     const lastSyncAt = this.readLastSyncAt(db);
-    const emails = this.loadCandidateEmails(db, normalizedFilters, Math.max(limit * 10, 500));
+    const warnings: string[] = [];
+    const emails = this.loadCandidateEmails(db, normalizedFilters, Math.max(limit * 10, 500), warnings);
     const matches = dedupeEmails(emails)
       .filter((email) => matchesIndexedSearch(email, normalizedFilters))
       .sort((left, right) => {
@@ -620,6 +622,7 @@ export class LocalIndexService {
       hasMore: totalCount > offset + limit,
       emails: matches.slice(offset, offset + limit),
       ...this.indexFreshnessFields(lastSyncAt),
+      ...(warnings.length > 0 ? { warnings } : {}),
     };
   }
 
@@ -1572,13 +1575,17 @@ export class LocalIndexService {
     db: Database.Database,
     filters: SearchEmailsInput,
     limitHint: number,
+    warnings: string[],
   ): EmailSummary[] {
     const sqlParts = [`SELECT * FROM messages`];
     const params: unknown[] = [];
     const conditions: string[] = [];
 
     if (filters.query) {
-      const ftsIds = this.searchFtsIds(db, filters.query, limitHint);
+      const { ids: ftsIds, warning } = this.searchFtsIds(db, filters.query, limitHint);
+      if (warning) {
+        warnings.push(warning);
+      }
       if (ftsIds.length === 0) {
         return [];
       }
@@ -1636,7 +1643,11 @@ export class LocalIndexService {
       .map((row) => this.rowToEmailSummary(row as MessageRow));
   }
 
-  private searchFtsIds(db: Database.Database, query: string, limit: number): string[] {
+  private searchFtsIds(
+    db: Database.Database,
+    query: string,
+    limit: number,
+  ): { ids: string[]; warning?: string } {
     const parsed = parseSearchQuery(query);
     const FTS5_OPERATORS = new Set(["not", "and", "or", "near"]);
     const safeTerms = parsed.residualTerms.filter(
@@ -1647,20 +1658,29 @@ export class LocalIndexService {
       .join(" AND ");
 
     if (!match) {
-      return [];
+      // Every token was filtered out (bare FTS5 operators or a leading "-"), so the
+      // query never actually ran — this is "search couldn't run", not "no results".
+      return {
+        ids: [],
+        warning: `Search query "${query}" contained no searchable terms after removing FTS5 operator tokens (NOT/AND/OR/NEAR) and leading hyphens — the search did not run. Rephrase without those tokens.`,
+      };
     }
 
     try {
-      return db
+      const ids = db
         .prepare(`SELECT email_id FROM messages_fts WHERE messages_fts MATCH ? LIMIT ?`)
         .all(match, limit)
         .map((row) => String((row as { email_id: string }).email_id));
+      return { ids };
     } catch (error) {
       this.log.warn("FTS search failed, falling back to metadata scan", "LocalIndexService", {
         query,
         error,
       });
-      return [];
+      return {
+        ids: [],
+        warning: `Full-text search failed for query "${query}" (likely invalid FTS5 syntax) — results below are empty, not necessarily "no matches". Try a simpler query.`,
+      };
     }
   }
 

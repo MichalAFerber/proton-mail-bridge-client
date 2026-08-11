@@ -102,6 +102,48 @@ test("background sync records success and schedules the next run", async () => {
   }
 });
 
+test("background sync passes the full folder list to indexing but only the first folder to IDLE", async () => {
+  const imapService = {
+    indexCalls: [],
+    idleCalls: [],
+    async collectEmailsForIndex(input) {
+      this.indexCalls.push(input.folder);
+      return { syncedAt: "2026-03-24T12:00:00.000Z", full: false, folders: [], folderStats: [], emails: [] };
+    },
+    async waitForMailboxChanges(input) {
+      this.idleCalls.push(input.folder);
+      return { folder: input.folder, timeoutMs: 1000, checkedAt: "2026-03-24T12:00:01.000Z", changed: false, events: [] };
+    },
+  };
+  const localIndexService = {
+    async getSyncCheckpointMap() {
+      return {};
+    },
+    async recordSnapshot(snapshot) {
+      return { updatedAt: snapshot.syncedAt };
+    },
+  };
+
+  const config = createConfig();
+  config.runtime.autoSyncFolder = "INBOX,Sent";
+  config.runtime.idleWatchEnabled = true;
+
+  const service = new BackgroundSyncService(config, imapService, localIndexService);
+  service.start();
+
+  try {
+    await service.runNow("unit-test");
+    assert.deepEqual(imapService.indexCalls, ["INBOX,Sent"]);
+
+    // Give the IDLE loop's first iteration a tick to run.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(imapService.idleCalls.length > 0);
+    assert.ok(imapService.idleCalls.every((folder) => folder === "INBOX"));
+  } finally {
+    service.stop();
+  }
+});
+
 test("background sync backs off cleanly on auth failures", async () => {
   const imapService = {
     attempts: 0,
