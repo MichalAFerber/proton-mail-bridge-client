@@ -4987,8 +4987,13 @@ export async function main(): Promise<void> {
   await server.connect(transport);
   logger.info("ProtonMail MCP server ready", "MCPServer");
 
-  const shutdown = async (signal: string) => {
-    logger.info(`Received ${signal}, shutting down`, "MCPServer");
+  let shuttingDown = false;
+  const shutdown = async (reason: string) => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    logger.info(`Received ${reason}, shutting down`, "MCPServer");
     backgroundSyncService.stop();
     await Promise.allSettled([imapService.disconnect(), smtpService.close()]);
     process.exit(0);
@@ -4999,6 +5004,28 @@ export async function main(): Promise<void> {
   });
   process.on("SIGTERM", () => {
     void shutdown("SIGTERM");
+  });
+
+  // Lifecycle tie to the MCP client: this is a stdio server whose only consumer
+  // is the parent process (e.g. Claude Desktop) on the other end of the pipe.
+  // When that parent exits it closes our stdin; without this the background-sync
+  // timer and IMAP connection keep the event loop alive and the process is
+  // reparented to launchd/init and lingers forever (burning CPU). Exit as soon
+  // as the pipe closes so no orphan survives its consumer.
+  transport.onclose = () => {
+    void shutdown("transport-close");
+  };
+  process.stdin.on("end", () => {
+    void shutdown("stdin-end");
+  });
+  process.stdin.on("close", () => {
+    void shutdown("stdin-close");
+  });
+  // A broken pipe (parent killed abruptly) surfaces as an stdin error rather
+  // than a clean end; treat it the same way instead of crashing.
+  process.stdin.on("error", (error) => {
+    logger.warn("stdin error, shutting down", "MCPServer", error);
+    void shutdown("stdin-error");
   });
 }
 

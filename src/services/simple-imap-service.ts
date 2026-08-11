@@ -66,6 +66,11 @@ const FETCH_INDEX_QUERY = {
 } as const;
 
 const MAX_ATTACHMENT_TEXT_BYTES = 512_000;
+// A healthy IMAP IDLE blocks until a mailbox change or the requested timeout.
+// If client.idle() returns faster than this with no events, IDLE never actually
+// engaged (e.g. imapflow's `idling` flag stuck true after Proton Bridge ended
+// the session server-side) and we must recover instead of busy-spinning.
+const MIN_HEALTHY_IDLE_MS = 500;
 const UID_VALIDITY_MISMATCH_ERROR = "UID validity mismatch - local index is stale, run sync_emails to refresh";
 
 export function isLikelyAuthenticationError(error: unknown): boolean {
@@ -395,6 +400,7 @@ export class SimpleIMAPService {
     const idleClient = client as unknown as {
       maxIdleTime?: number | false;
       preCheck?: false | (() => Promise<void>);
+      idling?: boolean;
     };
     const previousMaxIdle = idleClient.maxIdleTime;
     const events: Array<Record<string, unknown>> = [];
@@ -443,9 +449,43 @@ export class SimpleIMAPService {
 
     try {
       idleClient.maxIdleTime = timeoutMs;
+
+      // imapflow's client.idle() early-returns as a no-op when `idling` is
+      // already true (see imap-flow.js: `async idle() { if (!this.idling) ... }`).
+      // Proton Bridge can terminate an IDLE session server-side without our DONE,
+      // which leaves imapflow's `idling` stuck true even though the socket is
+      // still "usable" — so ensureConnected() won't reconnect, and every
+      // subsequent idle() returns instantly. That turns the caller's watch loop
+      // into a 100%-CPU busy spin (observed: an orphaned process burning a full
+      // core for days). Our IDLE calls are serialized per folder via _idleActive
+      // and awaited by the caller, so no legitimate IDLE can be in flight here —
+      // if the flag is set, it is stuck. Clear it so idle() actually enters IDLE
+      // and blocks.
+      if (idleClient.idling) {
+        this.log.warn("Clearing stuck IMAP IDLE state before re-entering IDLE", "IMAPService", {
+          folder,
+        });
+        idleClient.idling = false;
+      }
+
+      const idleStartedAt = Date.now();
       await client.idle();
+      const idleElapsedMs = Date.now() - idleStartedAt;
       const checkedAt = new Date().toISOString();
       const changed = events.length > 0;
+
+      // Defense in depth: a healthy IDLE blocks until a mailbox change or until
+      // ~timeoutMs elapses. If it returned near-instantly with no events, IDLE
+      // did not actually engage (stuck state, lost capability, or a half-open
+      // socket). Drop the connection so the next iteration reconnects a fresh
+      // client rather than spinning on repeated no-op idle() calls.
+      if (!changed && idleElapsedMs < MIN_HEALTHY_IDLE_MS) {
+        this.log.warn("IMAP IDLE returned without blocking; resetting connection", "IMAPService", {
+          folder,
+          idleElapsedMs,
+        });
+        await this.disconnect();
+      }
       this.lastIdleAt = checkedAt;
       this.lastIdleError = undefined;
       if (changed) {
