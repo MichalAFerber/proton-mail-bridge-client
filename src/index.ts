@@ -939,6 +939,32 @@ const TOOLS = [
     },
   },
   {
+    name: "rename_label",
+    description: "Rename a Proton label (IMAP folder under Labels/ namespace). Messages keep the label, just under the new name. For renaming a folder use rename_folder with a Folders/ prefix.",
+    annotations: { destructiveHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Existing label name. The Labels/ prefix is optional and will be added automatically." },
+        newName: { type: "string", description: "New label name. The Labels/ prefix is optional and will be added automatically." },
+      },
+      required: ["name", "newName"],
+    },
+  },
+  {
+    name: "delete_label",
+    description: "Delete a Proton label (IMAP folder under Labels/ namespace). Deletes the label itself, not the messages — they remain in their other folders/labels. Irreversible. For deleting a folder use delete_folder with a Folders/ prefix.",
+    annotations: { destructiveHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Label name to delete. The Labels/ prefix is optional and will be added automatically." },
+        confirmed: { type: "boolean", description: "Pass true to confirm permanent deletion of the label. Required when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
+      },
+      required: ["name"],
+    },
+  },
+  {
     name: "batch_email_action",
     description: "Apply one action to a known list of email IDs in a single IMAP pass. Use when you already have the IDs and want to archive, trash, move, mark-read/unread, star/unstar, restore, or permanently delete them. Actions: mark_read, mark_unread, star, unstar, archive, trash, restore, move (requires targetFolder), delete (permanent expunge). Supports dryRun. Prefer bulk_delete when selecting messages by search criteria (from/subject/date) rather than by ID. Prefer apply_thread_action when acting on a thread by threadId. Prefer empty_folder to clear an entire folder.",
     annotations: { destructiveHint: true },
@@ -3999,6 +4025,32 @@ export function createServer(
           const labelPath = rawName.startsWith("Labels/") ? rawName : `Labels/${rawName}`;
           const result = await withAudit(auditService, name, args, () =>
             imapService.createFolder(labelPath)
+          );
+          return createTextResult(result);
+        }
+
+        case "rename_label": {
+          ensureMailboxWriteAllowed(config.runtime);
+          const rawName = requireString(args, "name");
+          const rawNewName = requireString(args, "newName");
+          if (!rawName.trim()) throw new McpError(ErrorCode.InvalidParams, "Label name cannot be empty.");
+          if (!rawNewName.trim()) throw new McpError(ErrorCode.InvalidParams, "New label name cannot be empty.");
+          const labelPath = rawName.startsWith("Labels/") ? rawName : `Labels/${rawName}`;
+          const newLabelPath = rawNewName.startsWith("Labels/") ? rawNewName : `Labels/${rawNewName}`;
+          const result = await withAudit(auditService, name, args, () =>
+            imapService.renameFolder(labelPath, newLabelPath)
+          );
+          return createTextResult(result);
+        }
+
+        case "delete_label": {
+          ensureMailboxWriteAllowed(config.runtime);
+          const rawName = requireString(args, "name");
+          if (!rawName.trim()) throw new McpError(ErrorCode.InvalidParams, "Label name cannot be empty.");
+          const labelPath = rawName.startsWith("Labels/") ? rawName : `Labels/${rawName}`;
+          ensureDestructiveConfirmed(config.runtime, normalizeBoolean(args?.confirmed, false), "Permanently delete label: " + labelPath);
+          const result = await withAudit(auditService, name, args, () =>
+            imapService.deleteFolder(labelPath)
           );
           return createTextResult(result);
         }
