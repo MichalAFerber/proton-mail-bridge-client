@@ -2694,4 +2694,60 @@ export class SimpleIMAPService {
     this.guardAttachmentOutputPath(resolved);
     return resolved;
   }
+
+  // Saves a message's raw RFC822 source to disk as a .eml file — the migration/
+  // backup counterpart to importEmail. Reuses the same PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR
+  // guard as attachment saving, since this writes arbitrary caller-controlled paths.
+  async exportEmail(emailId: string, outputPath?: string): Promise<{ emailId: string; outputPath: string }> {
+    const { folder, uid } = parseEmailId(emailId);
+    const source = await this.withMailbox(folder, true, async (client) => {
+      const message = await client.fetchOne(String(uid), { uid: true, source: true }, { uid: true });
+      if (!message || !message.source) {
+        throw new Error(`Email not found for id ${emailId}`);
+      }
+      return message.source;
+    });
+
+    const resolvedPath = await this.resolveAttachmentOutputPath(
+      emailId,
+      { filename: `${emailId.replace(/[/:]/g, "_")}.eml` },
+      outputPath,
+    );
+    await mkdir(dirname(resolvedPath), { recursive: true });
+    await writeFile(resolvedPath, source);
+
+    return { emailId, outputPath: basename(resolvedPath) };
+  }
+
+  // Imports a raw RFC822 message (e.g. a .eml exported from another provider)
+  // into a folder via IMAP APPEND — the migration/backup counterpart to
+  // exportEmail. Mirrors upsertRemoteDraft's APPEND + APPENDUID-or-fallback
+  // pattern.
+  async importEmail(input: {
+    raw: Buffer;
+    targetFolder?: string;
+    flags?: string[];
+    internalDate?: Date;
+  }): Promise<{ folder: string; uid?: number; emailId?: string }> {
+    const folder = input.targetFolder?.trim() || (await this.resolveSpecialFolder("\\Inbox", ["INBOX"]));
+    const client = await this.ensureConnected();
+    const appended = await client.append(folder, input.raw, input.flags ?? [], input.internalDate ?? new Date());
+    if (!appended) {
+      throw new Error(`Server did not append the imported message into ${folder}`);
+    }
+
+    let uid = appended.uid;
+    if (!uid) {
+      const parsed = await this.parseSource(input.raw);
+      const messageId = parsed.messageId;
+      if (messageId) {
+        uid = await this.findUidByHeader(folder, "message-id", messageId);
+      }
+    }
+
+    this.folderCache = undefined;
+    this.lastSyncAt = new Date().toISOString();
+
+    return { folder, uid, emailId: uid ? createEmailId(folder, uid) : undefined };
+  }
 }

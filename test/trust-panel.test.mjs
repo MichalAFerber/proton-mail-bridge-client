@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildSecurityInfo, parseAuthenticationResults } from "../dist/index.js";
+import { buildSecurityInfo, headerString, parseAuthenticationResults } from "../dist/index.js";
 
 test("parseAuthenticationResults extracts dkim/spf/dmarc results from a real Authentication-Results header", () => {
   const header =
@@ -53,4 +53,14 @@ test("buildSecurityInfo degrades gracefully when headers are missing entirely", 
   const security = buildSecurityInfo(detail);
   assert.equal(security.origin, undefined);
   assert.equal(security.dkim, undefined);
+});
+
+test("headerString detects a Disposition-Notification-To header for read-receipt requests", () => {
+  const withReceipt = { "disposition-notification-to": "sender@example.com" };
+  assert.equal(headerString(withReceipt, "disposition-notification-to"), "sender@example.com");
+  assert.ok(Boolean(headerString(withReceipt, "disposition-notification-to")));
+
+  const withoutReceipt = { subject: "Test" };
+  assert.equal(headerString(withoutReceipt, "disposition-notification-to"), undefined);
+  assert.ok(!Boolean(headerString(withoutReceipt, "disposition-notification-to")));
 });

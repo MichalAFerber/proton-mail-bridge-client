@@ -119,6 +119,7 @@ const TOOLS = [
         fromName: { type: "string", description: "Optional display name for the From header (e.g. 'Alice'). Does not change the sending address." },
         sanitizeHtml: { type: "boolean", description: "Strip scripts, event handlers, and remote image beacons from HTML before delivery. Defaults to true when body is HTML.", default: true },
         replyTo: { type: "string", description: "Optional reply-to email address." },
+        requestReadReceipt: { type: "boolean", description: "Request a read receipt (MDN) via a Disposition-Notification-To header. Most mail clients ask the recipient before honoring it — this is a request, not a guarantee.", default: false },
         attachments: {
           type: "array",
           description: "Attachments with base64 encoded content.",
@@ -1570,6 +1571,33 @@ const TOOLS = [
     },
   },
   {
+    name: "export_email",
+    description: "Save a message's full raw source (RFC822/.eml) to disk. Use for backup or migrating a message elsewhere. Requires PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR to be configured, same as save_attachment.",
+    annotations: { destructiveHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        emailId: { type: "string", description: "Composite email id in FOLDER::UID format." },
+        outputPath: { type: "string", description: "Optional file or directory path to write the .eml to." },
+      },
+      required: ["emailId"],
+    },
+  },
+  {
+    name: "import_email",
+    description: "Import a raw RFC822 message (.eml content) into a folder via IMAP APPEND. Use to restore a backed-up message or migrate mail from another provider's export. Does not send anything — this only inserts a message directly into the mailbox.",
+    annotations: { destructiveHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        raw: { type: "string", description: "Full raw RFC822 message source (the .eml file content) as a UTF-8 string." },
+        targetFolder: { type: "string", description: "Destination folder. Defaults to INBOX." },
+        markAsRead: { type: "boolean", description: "Set the \\Seen flag on import.", default: false },
+      },
+      required: ["raw"],
+    },
+  },
+  {
     name: "clear_cache",
     description: "Evict all in-memory caches: folder list, message metadata, and analytics data. Use when cached data appears stale after external mailbox changes (e.g. folders modified via Proton webmail). Does NOT affect the persistent SQLite index — use clear_index for that.",
     annotations: { destructiveHint: false },
@@ -1797,7 +1825,15 @@ function formatEmailDetailOutput(
     }
   }
 
-  const output: Record<string, unknown> = { ...detail, text: displayBody, security: buildSecurityInfo(detail) };
+  const output: Record<string, unknown> = {
+    ...detail,
+    text: displayBody,
+    security: buildSecurityInfo(detail),
+    // Disposition-Notification-To means the sender asked for a read receipt.
+    // Surfaced so an agent can decide whether to honor it — this server never
+    // sends an MDN automatically.
+    readReceiptRequested: Boolean(headerString(detail.headers, "disposition-notification-to")),
+  };
   if (!preferHtml) delete output.html;
   delete output.headers;
   return output;
@@ -1807,7 +1843,7 @@ function formatEmailDetailOutput(
 // detail.headers.list.unsubscribe = { mail?: string, url?: string, name?: string }
 // (mail has the "mailto:" prefix already stripped). See mapHeaderValue in
 // simple-imap-service.ts for how this nested shape survives serialization.
-function headerString(headers: Record<string, unknown> | undefined, name: string): string | undefined {
+export function headerString(headers: Record<string, unknown> | undefined, name: string): string | undefined {
   const value = headers?.[name];
   if (typeof value === "string") return value;
   if (Array.isArray(value) && typeof value[0] === "string") return value[0];
@@ -3102,6 +3138,7 @@ export function createServer(
                 : "normal",
             replyTo,
             attachments,
+            requestReadReceipt: normalizeBoolean(args.requestReadReceipt, false),
           };
 
           // Undo-send: PROTONMAIL_SEND_DELAY_SECONDS > 0 queues instead of sending
@@ -5368,6 +5405,26 @@ export function createServer(
             resolvedPath,
           );
           return createTextResult(result, false, [attachmentSource(result.emailId, result.attachment)]);
+        }
+
+        case "export_email": {
+          const result = await withAudit(auditService, name, args, async () =>
+            imapService.exportEmail(requireString(args, "emailId"), optionalString(args, "outputPath")),
+          );
+          return createTextResult(result);
+        }
+
+        case "import_email": {
+          ensureMailboxWriteAllowed(config.runtime);
+          const raw = Buffer.from(requireString(args, "raw"), "utf8");
+          const result = await withAudit(auditService, name, args, async () =>
+            imapService.importEmail({
+              raw,
+              targetFolder: optionalString(args, "targetFolder"),
+              flags: normalizeBoolean(args.markAsRead, false) ? ["\\Seen"] : [],
+            }),
+          );
+          return createTextResult(result);
         }
 
         case "save_attachments":

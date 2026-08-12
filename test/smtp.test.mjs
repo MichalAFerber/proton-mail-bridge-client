@@ -123,3 +123,22 @@ test("buildRawMessage round-trips a base64 attachment", async () => {
   assert.ok(message.includes("note.txt"));
   assert.ok(message.includes(content) || message.includes("attachment body"));
 });
+
+test("buildRawMessage adds Disposition-Notification-To only when requestReadReceipt is set", async () => {
+  const service = new SMTPService(createConfig());
+
+  const withReceipt = await service.buildRawMessage({
+    to: ["victim@example.com"],
+    subject: "Receipt test",
+    body: "please confirm reading this",
+    requestReadReceipt: true,
+  });
+  assert.ok(withReceipt.toString("utf8").toLowerCase().includes("disposition-notification-to: owner@example.com"));
+
+  const withoutReceipt = await service.buildRawMessage({
+    to: ["victim@example.com"],
+    subject: "No receipt",
+    body: "normal email",
+  });
+  assert.ok(!withoutReceipt.toString("utf8").toLowerCase().includes("disposition-notification-to"));
+});

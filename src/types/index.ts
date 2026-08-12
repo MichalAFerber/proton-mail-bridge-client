@@ -80,6 +80,8 @@ export interface SendEmailInput {
   references?: string[];
   messageId?: string;
   attachments?: EmailAttachmentInput[];
+  /** Request a read receipt (MDN) by adding a Disposition-Notification-To header pointing at the sender. Most mail clients ask the recipient before honoring it — this is a request, not a guarantee. */
+  requestReadReceipt?: boolean;
 }
 
 export interface EmailAttachmentSummary {
