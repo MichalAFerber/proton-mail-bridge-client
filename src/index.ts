@@ -138,6 +138,31 @@ const TOOLS = [
     },
   },
   {
+    name: "get_unsubscribe_info",
+    description: "Read the List-Unsubscribe header of a message and report how to unsubscribe from it — a mailto address, an https link, or both. Does not take any action. Use before unsubscribe_sender to see what's available, or to hand an https link to the user/agent to open manually (this server never auto-fetches unsubscribe URLs).",
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        emailId: { type: "string", description: "Composite email id from previous tool output." },
+      },
+      required: ["emailId"],
+    },
+  },
+  {
+    name: "unsubscribe_sender",
+    description: "Execute the mailto: variant of a message's List-Unsubscribe header by sending a minimal unsubscribe email through Proton Bridge SMTP. Only works when the header includes a mailto address — if it only has an https link, this throws and returns that link for you to open manually instead (this server never auto-fetches unsubscribe URLs, to avoid firing an unreviewed request from mail content). Call get_unsubscribe_info first to see what's available.",
+    annotations: { destructiveHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        emailId: { type: "string", description: "Composite email id from previous tool output." },
+        confirmed: { type: "boolean", description: "Set to true to confirm this send when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
+      },
+      required: ["emailId"],
+    },
+  },
+  {
     name: "send_test_email",
     description: "Send a minimal diagnostic email to confirm Proton Bridge SMTP credentials and connectivity. Use before relying on send_email in a new environment. Prefer get_connection_status for a connectivity check that does not actually send mail. Returns transport debug info and delivery status.",
     annotations: { destructiveHint: true },
@@ -513,7 +538,7 @@ const TOOLS = [
   },
   {
     name: "get_email_by_id",
-    description: "Fetch the full content of a single email using a composite emailId. Use after get_emails or search_emails to read a specific message in full. The emailId format is FOLDER::UID — always use the id returned by a prior tool call; do not construct it manually.",
+    description: "Fetch the full content of a single email using a composite emailId. Use after get_emails or search_emails to read a specific message in full. The emailId format is FOLDER::UID — always use the id returned by a prior tool call; do not construct it manually. Response includes a security block (dkim/spf/dmarc pass-fail, Proton's spam score/action, and encryption metadata) for phishing/legitimacy triage.",
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
@@ -1718,10 +1743,63 @@ function formatEmailDetailOutput(
     }
   }
 
-  const output: Record<string, unknown> = { ...detail, text: displayBody };
+  const output: Record<string, unknown> = { ...detail, text: displayBody, security: buildSecurityInfo(detail) };
   if (!preferHtml) delete output.html;
   delete output.headers;
   return output;
+}
+
+// mailparser merges List-Unsubscribe (and other List-*) headers into
+// detail.headers.list.unsubscribe = { mail?: string, url?: string, name?: string }
+// (mail has the "mailto:" prefix already stripped). See mapHeaderValue in
+// simple-imap-service.ts for how this nested shape survives serialization.
+function headerString(headers: Record<string, unknown> | undefined, name: string): string | undefined {
+  const value = headers?.[name];
+  if (typeof value === "string") return value;
+  if (Array.isArray(value) && typeof value[0] === "string") return value[0];
+  return undefined;
+}
+
+// Authentication-Results (RFC 8601) is a semi-structured string, not something
+// mailparser special-cases into an object: "mx.google.com; dkim=pass ...;
+// spf=pass ...; dmarc=pass ...". Pull out the result word for each mechanism.
+export function parseAuthenticationResults(value?: string): { dkim?: string; spf?: string; dmarc?: string } {
+  if (!value) return {};
+  const match = (mechanism: string) => value.match(new RegExp(`\\b${mechanism}=(\\w+)`, "i"))?.[1]?.toLowerCase();
+  return { dkim: match("dkim"), spf: match("spf"), dmarc: match("dmarc") };
+}
+
+// Bridge injects Proton-only security metadata into every message it serves.
+// Surfacing it lets an agent answer "is this email legit?" using signals a
+// generic IMAP client can't see — verified against a live Bridge connection
+// during the roadmap audit that motivated this tool (x-pm-origin,
+// x-pm-content-encryption, x-pm-transfer-encryption, x-pm-spamscore,
+// x-pm-spam-action, and a standard Authentication-Results header were all
+// observed present on a real message).
+export function buildSecurityInfo(detail: EmailDetail): Record<string, unknown> {
+  const headers = detail.headers;
+  const auth = parseAuthenticationResults(headerString(headers, "authentication-results"));
+  return {
+    origin: headerString(headers, "x-pm-origin"),
+    contentEncryption: headerString(headers, "x-pm-content-encryption"),
+    transferEncryption: headerString(headers, "x-pm-transfer-encryption"),
+    spamScore: headerString(headers, "x-pm-spamscore"),
+    spamAction: headerString(headers, "x-pm-spam-action"),
+    dkim: auth.dkim,
+    spf: auth.spf,
+    dmarc: auth.dmarc,
+  };
+}
+
+export function extractUnsubscribeInfo(detail: EmailDetail): { mailto?: string; url?: string } {
+  const list = detail.headers?.list as Record<string, unknown> | undefined;
+  const unsubscribe = list?.unsubscribe as Record<string, unknown> | undefined;
+  const mail = typeof unsubscribe?.mail === "string" ? unsubscribe.mail : undefined;
+  const url = typeof unsubscribe?.url === "string" ? unsubscribe.url : undefined;
+  return {
+    mailto: mail && isValidEmail(mail) ? mail : undefined,
+    url,
+  };
 }
 
 function parseFieldsArg(value: unknown): string[] | undefined {
@@ -2983,6 +3061,54 @@ export function createServer(
             rejected: result.rejected,
             response: result.response,
             sentCopy: sentCopyTokenSend,
+          });
+        }
+
+        case "get_unsubscribe_info": {
+          const detail = await imapService.getEmailById(requireString(args, "emailId"));
+          const info = extractUnsubscribeInfo(detail);
+          return createTextResult({
+            emailId: detail.id,
+            hasUnsubscribeHeader: Boolean(info.mailto || info.url),
+            mailto: info.mailto,
+            url: info.url,
+            note: info.url
+              ? "This server never auto-fetches unsubscribe URLs — open the url yourself, or use unsubscribe_sender if mailto is also set."
+              : undefined,
+          });
+        }
+
+        case "unsubscribe_sender": {
+          const detail = await imapService.getEmailById(requireString(args, "emailId"));
+          const info = extractUnsubscribeInfo(detail);
+          if (!info.mailto) {
+            if (info.url) {
+              throw new McpError(
+                ErrorCode.InvalidParams,
+                `This message's List-Unsubscribe header only has an https link, not a mailto address — this server never auto-fetches unsubscribe URLs. Open it yourself: ${info.url}`,
+              );
+            }
+            throw new McpError(ErrorCode.InvalidParams, "This message has no List-Unsubscribe header — nothing to unsubscribe from.");
+          }
+
+          ensureDestructiveConfirmed(config.runtime, normalizeBoolean(args.confirmed, false), `Send unsubscribe email to ${info.mailto} for message "${detail.subject}"`);
+          ensureSendAllowed(config.runtime);
+
+          const result = await withAudit(auditService, name, args, () =>
+            smtpService.sendEmail({
+              to: [info.mailto as string],
+              subject: "unsubscribe",
+              body: "unsubscribe",
+              isHtml: false,
+            }),
+          );
+
+          return createTextResult({
+            emailId: detail.id,
+            unsubscribedVia: info.mailto,
+            messageId: result.messageId,
+            accepted: result.accepted,
+            rejected: result.rejected,
           });
         }
 
