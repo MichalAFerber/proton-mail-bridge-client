@@ -953,6 +953,24 @@ export class SimpleIMAPService {
     };
   }
 
+  private extractAttachmentText(attachment: { content: Buffer; contentType?: string }): string | undefined {
+    // GAP-12: guard zero-byte attachments before calling toString()
+    if (!attachment.content || attachment.content.length === 0 || attachment.content.length > MAX_ATTACHMENT_TEXT_BYTES) {
+      return undefined;
+    }
+    const contentType = attachment.contentType?.toLowerCase();
+    if (contentType === "text/html") {
+      return stripHtmlToText(attachment.content.toString("utf8"));
+    }
+    if (contentType === "text/calendar") {
+      return summarizeCalendarText(attachment.content.toString("utf8"));
+    }
+    if (isTextLikeMimeType(attachment.contentType)) {
+      return attachment.content.toString("utf8");
+    }
+    return undefined;
+  }
+
   async getAttachmentContent(
     emailId: string,
     attachmentId: string,
@@ -977,18 +995,51 @@ export class SimpleIMAPService {
         isCalendarInvite: attachment.isCalendarInvite,
         isSignature: attachment.isSignature,
       },
-      text:
-        // GAP-12: guard zero-byte attachments before calling toString()
-        attachment.content && attachment.content.length > 0 && attachment.content.length <= MAX_ATTACHMENT_TEXT_BYTES
-          ? attachment.contentType?.toLowerCase() === "text/html"
-            ? stripHtmlToText(attachment.content.toString("utf8"))
-            : attachment.contentType?.toLowerCase() === "text/calendar"
-              ? summarizeCalendarText(attachment.content.toString("utf8"))
-              : isTextLikeMimeType(attachment.contentType)
-              ? attachment.content.toString("utf8")
-              : undefined
-          : undefined,
+      text: this.extractAttachmentText(attachment),
       base64: includeBase64 ? base64 : undefined,
+    };
+  }
+
+  // First-class text extraction, deliberately NOT gated by the base64-oriented
+  // maxInlineBytes limit (assertAttachmentWithinInlineLimit) — that guard exists
+  // to bound base64 payload size, which is a different (larger) concern than
+  // returning plain extracted text. Gated instead by MAX_ATTACHMENT_TEXT_BYTES,
+  // same as getAttachmentContent's own text field. text/* MIME types only for
+  // now (PDF extraction would need a new dependency — deliberately out of scope,
+  // avoids re-triggering the CI allowScripts/native-binding issues just fixed).
+  async getAttachmentText(emailId: string, attachmentId: string): Promise<{
+    emailId: string;
+    attachment: AttachmentContentResult["attachment"];
+    text?: string;
+  }> {
+    const attachment = await this.getParsedAttachment(emailId, attachmentId);
+    const text = this.extractAttachmentText(attachment);
+    if (text === undefined) {
+      const reason =
+        !attachment.content || attachment.content.length === 0
+          ? "the attachment is empty"
+          : attachment.content.length > MAX_ATTACHMENT_TEXT_BYTES
+            ? `it exceeds the ${MAX_ATTACHMENT_TEXT_BYTES} byte text-extraction limit`
+            : `its content type (${attachment.contentType ?? "unknown"}) is not a supported text format`;
+      throw new Error(`Cannot extract text from attachment ${attachmentId}: ${reason}. Use get_attachment_content or save_attachment instead.`);
+    }
+
+    return {
+      emailId,
+      attachment: {
+        id: attachment.id,
+        filename: attachment.filename,
+        contentType: attachment.contentType,
+        size: attachment.size,
+        disposition: attachment.disposition,
+        cid: attachment.cid,
+        checksum: attachment.checksum,
+        isInline: attachment.isInline,
+        kind: attachment.kind,
+        isCalendarInvite: attachment.isCalendarInvite,
+        isSignature: attachment.isSignature,
+      },
+      text,
     };
   }
 

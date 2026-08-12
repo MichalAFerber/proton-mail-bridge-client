@@ -1540,6 +1540,19 @@ const TOOLS = [
     },
   },
   {
+    name: "get_attachment_text",
+    description: "Extract plain text from a text-like attachment (text/plain, text/csv, text/markdown, application/json, application/xml, text/html stripped of markup, text/calendar summarized) without dealing with base64 encoding. Not gated by the smaller inline-base64 size limit that get_attachment_content uses — bounded separately at 512KB of raw content. Fails clearly for non-text formats (e.g. PDF, images) — use get_attachment_content or save_attachment for those.",
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        emailId: { type: "string", description: "Composite email id in FOLDER::UID format, as returned by get_emails or search_emails." },
+        attachmentId: { type: "string", description: "Stable attachment id returned by list_attachments." },
+      },
+      required: ["emailId", "attachmentId"],
+    },
+  },
+  {
     name: "save_attachments",
     description: "Save all qualifying attachments from an email to a directory on disk, with optional filename substring or content-type filters. Use to batch-download attachments from a single email. Returns the list of written file paths. Prefer save_attachment when you need to save one specific attachment by its attachmentId.",
     annotations: { destructiveHint: false },
@@ -5381,6 +5394,14 @@ export function createServer(
             await wf(absTarget, buf);
             return createTextResult({ saved: true, path: absTarget, bytes: buf.length, filename: result.attachment?.filename });
           }
+          return createTextResult(result, false, [attachmentSource(result.emailId, result.attachment)]);
+        }
+
+        case "get_attachment_text": {
+          const result = await imapService.getAttachmentText(
+            requireString(args, "emailId"),
+            requireString(args, "attachmentId"),
+          );
           return createTextResult(result, false, [attachmentSource(result.emailId, result.attachment)]);
         }
 
