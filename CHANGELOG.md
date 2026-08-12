@@ -2,7 +2,9 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [1.17.0] — 2026-08-12
+
+Wave C: differentiator features, all shipped with real regression tests.
 
 ### Added
 - `get_emails_by_ids`: batch-read up to 25 emails by composite id in one call
