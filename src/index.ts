@@ -37,6 +37,7 @@ import type {
   EmailDetail,
   EmailSummary,
   ProtonMailConfig,
+  SendEmailInput,
 } from "./types/index.js";
 import {
   ensureValidEmails,
@@ -97,7 +98,7 @@ const ALL_EMAIL_ACTIONS: EmailAction[] = [
 const TOOLS = [
   {
     name: "send_email",
-    description: "Compose and immediately send a new outbound email through Proton Bridge SMTP. Use for one-shot messages that need no review. Prefer create_draft when you want to save and review before sending, or reply_to_email when responding to an existing message. Fails if PROTONMAIL_ALLOW_SEND is false or if Bridge SMTP is unreachable. Returns delivery confirmation.",
+    description: "Compose and send a new outbound email through Proton Bridge SMTP. Use for one-shot messages that need no review. Prefer create_draft when you want to save and review before sending, or reply_to_email when responding to an existing message. Fails if PROTONMAIL_ALLOW_SEND is false or if Bridge SMTP is unreachable. If PROTONMAIL_SEND_DELAY_SECONDS is set, this queues the send instead of sending immediately and returns a cancelable id — call cancel_send within the window to abort. Otherwise returns delivery confirmation immediately.",
     annotations: { destructiveHint: true },
     inputSchema: {
       type: "object",
@@ -136,6 +137,18 @@ const TOOLS = [
         dryRun: { type: "boolean", description: "Preview the full recipient set and validate without sending.", default: false },
       },
       required: ["to", "subject"],
+    },
+  },
+  {
+    name: "cancel_send",
+    description: "Cancel a send_email call that was queued because PROTONMAIL_SEND_DELAY_SECONDS is set. Only works while the item is still pending — once it has actually sent, this returns canceled: false. No effect (throws) if PROTONMAIL_SEND_DELAY_SECONDS is 0, since nothing is ever queued in that case.",
+    annotations: { destructiveHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The id returned by a queued send_email call." },
+      },
+      required: ["id"],
     },
   },
   {
@@ -2749,6 +2762,7 @@ export function buildConfigFromEnv(): ProtonMailConfig {
   const imapUsername = process.env.PROTONMAIL_IMAP_USERNAME?.trim() || username;
   const imapPassword = process.env.PROTONMAIL_IMAP_PASSWORD?.trim() || password;
   const opDelayMs = parseIntegerEnv("PROTONMAIL_OP_DELAY_MS", 0, 0, 5000);
+  const sendDelaySeconds = parseIntegerEnv("PROTONMAIL_SEND_DELAY_SECONDS", 0, 0, 300);
   const smtpHost = process.env.PROTONMAIL_SMTP_HOST || "127.0.0.1";
   const imapHost = process.env.PROTONMAIL_IMAP_HOST || "localhost";
   const imapSecure = parseBooleanEnv("PROTONMAIL_IMAP_SECURE", false);
@@ -2807,6 +2821,7 @@ export function buildConfigFromEnv(): ProtonMailConfig {
       allowFileDownloadDir,
       maxInlineBytes: parseIntegerEnv("PROTONMAIL_MAX_INLINE_BYTES", 40, 1, 10240),
       opDelayMs,
+      sendDelaySeconds,
     },
   };
 }
@@ -3029,24 +3044,41 @@ export function createServer(
             return createTextResult({ dryRun: true, wouldSendTo: { to, cc: cc ?? [], bcc: bcc ?? [] }, subject, note: "No email was sent." });
           }
 
+          const emailPayload: SendEmailInput = {
+            to,
+            cc,
+            bcc,
+            subject,
+            body,
+            isHtml,
+            htmlBody,
+            fromName,
+            sanitizeHtml,
+            priority:
+              priority === "high" || priority === "low" || priority === "normal"
+                ? priority
+                : "normal",
+            replyTo,
+            attachments,
+          };
+
+          // Undo-send: PROTONMAIL_SEND_DELAY_SECONDS > 0 queues instead of sending
+          // immediately, cancelable via cancel_send until the window elapses.
+          if (config.runtime.sendDelaySeconds > 0) {
+            const sendAt = new Date(Date.now() + config.runtime.sendDelaySeconds * 1000).toISOString();
+            const queued = await withAudit(auditService, name, args, async () =>
+              deliveryQueueService.enqueue(emailPayload, sendAt, "undo_send"),
+            );
+            return createTextResult({
+              queued: true,
+              id: queued.id,
+              sendAt: queued.sendAt,
+              note: `Not sent yet — will send in ~${config.runtime.sendDelaySeconds}s unless canceled with cancel_send. This server must stay running for the send to fire; if it's restarted before sendAt, the send fires on next startup instead.`,
+            });
+          }
+
           const result = await withAudit(auditService, name, args, async () =>
-            smtpService.sendEmail({
-              to,
-              cc,
-              bcc,
-              subject,
-              body,
-              isHtml,
-              htmlBody,
-              fromName,
-              sanitizeHtml,
-              priority:
-                priority === "high" || priority === "low" || priority === "normal"
-                  ? priority
-                  : "normal",
-              replyTo,
-              attachments,
-            }),
+            smtpService.sendEmail(emailPayload),
           );
 
           let sentCopyTokenSend = "[sent-copy:unverified]";
@@ -3065,6 +3097,13 @@ export function createServer(
             response: result.response,
             sentCopy: sentCopyTokenSend,
           });
+        }
+
+        case "cancel_send": {
+          const result = await withAudit(auditService, name, args, async () =>
+            deliveryQueueService.cancel(requireString(args, "id")),
+          );
+          return createTextResult(result);
         }
 
         case "get_unsubscribe_info": {

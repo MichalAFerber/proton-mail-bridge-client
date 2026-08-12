@@ -24,6 +24,7 @@ const KEYS = [
   "PROTONMAIL_SYNC_INTERVAL_MINUTES",
   "PROTONMAIL_IDLE_WATCH",
   "PROTONMAIL_IDLE_MAX_SECONDS",
+  "PROTONMAIL_SEND_DELAY_SECONDS",
 ];
 
 test("buildConfigFromEnv reads *_FILE secrets and runtime policy flags", async () => {
@@ -89,6 +90,29 @@ test("buildConfigFromEnv defaults autoSyncFolder to INBOX,Sent so digest/follow-
 
     const config = buildConfigFromEnv();
     assert.equal(config.runtime.autoSyncFolder, "INBOX,Sent");
+  } finally {
+    for (const key of KEYS) {
+      if (previous[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = previous[key];
+      }
+    }
+  }
+});
+
+test("buildConfigFromEnv wires PROTONMAIL_SEND_DELAY_SECONDS through to runtime.sendDelaySeconds, defaulting to 0 (disabled)", () => {
+  const previous = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
+
+  try {
+    process.env.PROTONMAIL_USERNAME = "owner@example.com";
+    process.env.PROTONMAIL_PASSWORD = "bridge-secret";
+
+    delete process.env.PROTONMAIL_SEND_DELAY_SECONDS;
+    assert.equal(buildConfigFromEnv().runtime.sendDelaySeconds, 0);
+
+    process.env.PROTONMAIL_SEND_DELAY_SECONDS = "20";
+    assert.equal(buildConfigFromEnv().runtime.sendDelaySeconds, 20);
   } finally {
     for (const key of KEYS) {
       if (previous[key] === undefined) {

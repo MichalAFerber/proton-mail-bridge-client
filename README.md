@@ -357,7 +357,7 @@ PROTONMAIL_PASSWORD_COMMAND='pass proton/password'
 PROTONMAIL_DATA_DIR="$HOME/.proton-mail-bridge-client"
 
 # Tools
-PROTONMAIL_TOOL_TIER='full'          # 'core' exposes 20 essential tools (saves context window); 'full' exposes all 76
+PROTONMAIL_TOOL_TIER='full'          # 'core' exposes 20 essential tools (saves context window); 'full' exposes all 82
 
 # Safety
 PROTONMAIL_READ_ONLY='false'
@@ -365,6 +365,7 @@ PROTONMAIL_ALLOW_SEND='true'
 PROTONMAIL_ALLOW_REMOTE_DRAFT_SYNC='true'
 PROTONMAIL_ALLOWED_ACTIONS='mark_read,mark_unread,star,unstar,archive,trash,restore'
 PROTONMAIL_CONFIRM_DESTRUCTIVE='false'
+PROTONMAIL_SEND_DELAY_SECONDS='0'    # >0: send_email queues instead of sending immediately, cancelable via cancel_send. Only fires while this server stays running.
 
 # Sync
 PROTONMAIL_AUTO_SYNC='true'

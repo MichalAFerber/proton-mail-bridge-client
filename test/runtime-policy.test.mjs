@@ -26,6 +26,7 @@ function createRuntime(overrides = {}) {
     allowFileDownloadDir: undefined,
     maxInlineBytes: 40960,
     opDelayMs: 0,
+    sendDelaySeconds: 0,
     ...overrides,
   };
 }
@@ -70,6 +71,7 @@ test("sanitized runtime config excludes secrets and preserves policy flags", () 
     allowFileDownloadDir: null,
     maxInlineBytes: 40960,
     opDelayMs: 0,
+    sendDelaySeconds: 0,
   });
 });
 

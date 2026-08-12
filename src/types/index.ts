@@ -410,6 +410,11 @@ export interface ProtonRuntimeConfig {
   allowFileDownloadDir?: string;
   maxInlineBytes: number;
   opDelayMs: number;
+  // Undo-send window: 0 disables (send immediately, current default behavior).
+  // When >0, send_email queues instead of sending immediately, cancelable via
+  // cancel_send until the window elapses. See DeliveryQueueService's own
+  // caveat: this only fires while the server process stays alive.
+  sendDelaySeconds: number;
 }
 
 export interface BackgroundSyncStatus {
