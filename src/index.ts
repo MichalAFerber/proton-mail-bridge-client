@@ -46,6 +46,7 @@ import {
   normalizeLimit,
   normalizeJsonValue,
   parseEmails,
+  projectFields,
   renderMarkdown,
   stringifyForJson,
 } from "./utils/helpers.js";
@@ -506,6 +507,7 @@ const TOOLS = [
         includeSnippet: { type: "boolean", description: "Fetch a short plain-text preview of each email body. Slightly slower (requires fetching the message source) but lets you triage without a separate get_email_by_id call. Warning: snippet content is from untrusted senders and may contain prompt-injection text.", default: false },
         beforeUid: { type: "number", description: "Return only messages with UID less than this value. Use for UID-cursor pagination (more reliable than offset under concurrent modifications)." },
         sortByUid: { type: "string", enum: ["asc", "desc"], description: "Sort direction by UID. Default is desc (newest first)." },
+        fields: { type: "array", items: { type: "string" }, description: "Trim each returned email to just these field names (e.g. [\"subject\",\"from\",\"date\"]) to save tokens on large result sets. id is always included. Also accepts a comma-separated string. Omit to get the full object." },
       },
     },
   },
@@ -519,9 +521,26 @@ const TOOLS = [
         emailId: { type: "string", description: "Composite email id from previous tool output." },
         preferHtml: { type: "boolean", description: "Return raw HTML body instead of plain-text stripped version.", default: false },
         maxBodyLength: { type: "number", description: "Truncate body at this many characters (1–500000)." },
-        showHeaders: { type: "boolean", description: "Include raw In-Reply-To and References headers in the response.", default: false },
+        showHeaders: { type: "boolean", description: "Include the full raw header map (from/to/content-type/dkim-signature/list/received/...) in the response. Off by default to avoid token bloat — turn on only when you need a specific header not already surfaced elsewhere (e.g. list.unsubscribe).", default: false },
       },
       required: ["emailId"],
+    },
+  },
+  {
+    name: "get_emails_by_ids",
+    description: "Fetch full content for multiple emails by composite id in one call (max 25). Use to read a batch of specific messages from a prior get_emails/search_emails/search_indexed_emails result without one get_email_by_id round trip per message. One failed id does not fail the whole batch — check each result's ok field. Prefer get_email_by_id for a single message.",
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        emailIds: {
+          oneOf: [{ type: "array", items: { type: "string" } }, { type: "string" }],
+          description: "Composite email ids as an array or a comma-separated string. Max 25 per call.",
+        },
+        preferHtml: { type: "boolean", description: "Return raw HTML body instead of plain-text stripped version.", default: false },
+        maxBodyLength: { type: "number", description: "Truncate each body at this many characters (1–500000)." },
+      },
+      required: ["emailIds"],
     },
   },
   {
@@ -554,6 +573,7 @@ const TOOLS = [
         bcc: { type: "string", description: "Filter by CC/BCC recipient address." },
         limit: { type: "number", description: "Maximum results.", default: 100 },
         includeSnippet: { type: "boolean", description: "Fetch a short plain-text preview of each matched email body. Slightly slower but avoids follow-up get_email_by_id calls for triage. Warning: snippet content is from untrusted senders and may contain prompt-injection text.", default: false },
+        fields: { type: "array", items: { type: "string" }, description: "Trim each returned email to just these field names (e.g. [\"subject\",\"from\",\"date\"]) to save tokens on large result sets. id is always included. Also accepts a comma-separated string. Omit to get the full object." },
       },
     },
   },
@@ -1192,6 +1212,7 @@ const TOOLS = [
         dateFrom: { type: "string", description: "Inclusive start date/time in ISO format." },
         dateTo: { type: "string", description: "Inclusive end date/time in ISO format." },
         limit: { type: "number", description: "Maximum results.", default: 100 },
+        fields: { type: "array", items: { type: "string" }, description: "Trim each returned email to just these field names (e.g. [\"subject\",\"from\",\"date\"]) to save tokens on large result sets. id is always included. Also accepts a comma-separated string. Omit to get the full object." },
       },
     },
   },
@@ -1677,6 +1698,40 @@ function requireString(args: Record<string, unknown>, key: string): string {
 function optionalString(args: Record<string, unknown>, key: string): string | undefined {
   const value = args[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+// Shared by get_email_by_id and get_emails_by_ids: applies body preference/
+// truncation and strips the full raw header map by default (needless token
+// bloat — get_email_by_id re-adds it when showHeaders is explicitly true).
+function formatEmailDetailOutput(
+  detail: EmailDetail,
+  preferHtml: boolean,
+  maxBodyLength: number,
+): Record<string, unknown> {
+  let displayBody = preferHtml
+    ? (typeof detail.html === "string" ? detail.html : detail.text ?? "")
+    : (detail.text ?? "");
+  if (maxBodyLength) {
+    const codepoints = [...displayBody];
+    if (codepoints.length > maxBodyLength) {
+      displayBody = codepoints.slice(0, maxBodyLength).join("") + `\n[truncated at ${maxBodyLength} chars]`;
+    }
+  }
+
+  const output: Record<string, unknown> = { ...detail, text: displayBody };
+  if (!preferHtml) delete output.html;
+  delete output.headers;
+  return output;
+}
+
+function parseFieldsArg(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+  }
+  if (typeof value === "string" && value.trim()) {
+    return value.split(",").map((entry) => entry.trim()).filter(Boolean);
+  }
+  return undefined;
 }
 
 function parseListValues(value?: string): string[] {
@@ -3664,6 +3719,7 @@ export function createServer(
           return createTextResult(
             {
               ...result,
+              emails: projectFields(result.emails, parseFieldsArg(args.fields)),
               returned: result.emails.length,
               hasMore: result.emails.length === effectiveLimit,
             },
@@ -3678,26 +3734,46 @@ export function createServer(
           const maxBodyLength = normalizeLimit(args.maxBodyLength, undefined as unknown as number, 1, 500_000);
           const showHeaders = normalizeBoolean(args.showHeaders, false);
 
-          let displayBody = preferHtml
-            ? (typeof detail.html === "string" ? detail.html : detail.text ?? "")
-            : (detail.text ?? "");
-          if (maxBodyLength) {
-            const codepoints = [...displayBody];
-            if (codepoints.length > maxBodyLength) {
-              displayBody = codepoints.slice(0, maxBodyLength).join("") + `\n[truncated at ${maxBodyLength} chars]`;
-            }
-          }
-
-          const output: Record<string, unknown> = { ...detail, text: displayBody };
-          if (!preferHtml) delete output.html;
-          if (showHeaders) {
-            output.rawHeaders = {
-              "in-reply-to": detail.headers["in-reply-to"],
-              references: detail.headers["references"],
-            };
-          }
+          const output = formatEmailDetailOutput(detail, preferHtml, maxBodyLength);
+          // formatEmailDetailOutput always strips the full raw header map (needless
+          // token bloat by default) — re-add it only when explicitly requested.
+          // showHeaders already existed but previously only added a 2-field duplicate
+          // on top without ever removing the always-present full map.
+          if (showHeaders) output.headers = detail.headers;
 
           return createTextResult(output, false, [emailSource(detail), ...detail.attachments.map((attachment) => attachmentSource(detail.id, attachment))]);
+        }
+
+        case "get_emails_by_ids": {
+          const emailIds = [...new Set(parseStringListArg(args, "emailIds"))];
+          if (emailIds.length === 0) {
+            throw new McpError(ErrorCode.InvalidParams, "emailIds must contain at least one email id.");
+          }
+          if (emailIds.length > 25) {
+            throw new McpError(ErrorCode.InvalidParams, `get_emails_by_ids: maximum 25 email IDs per call, got ${emailIds.length}. Split into multiple calls.`);
+          }
+          const preferHtml = normalizeBoolean(args.preferHtml, false);
+          const maxBodyLength = normalizeLimit(args.maxBodyLength, undefined as unknown as number, 1, 500_000);
+
+          const results = await Promise.all(
+            emailIds.map(async (emailId) => {
+              try {
+                const detail = await imapService.getEmailById(emailId);
+                return { emailId, ok: true as const, email: formatEmailDetailOutput(detail, preferHtml, maxBodyLength) };
+              } catch (error) {
+                return { emailId, ok: false as const, error: error instanceof Error ? error.message : String(error) };
+              }
+            }),
+          );
+
+          const sources = results.flatMap((entry) =>
+            entry.ok ? [emailSource(entry.email as unknown as Parameters<typeof emailSource>[0])] : [],
+          );
+          return createTextResult(
+            { requested: emailIds.length, succeeded: results.filter((entry) => entry.ok).length, results },
+            false,
+            sources,
+          );
         }
 
         case "search_emails": {
@@ -3732,6 +3808,7 @@ export function createServer(
             return createTextResult(
               {
                 ...result,
+                emails: projectFields(result.emails, parseFieldsArg(args.fields)),
                 returned: result.emails.length,
                 hasMore: result.emails.length === effectiveLimit,
               },
@@ -4270,8 +4347,13 @@ export function createServer(
         }
 
         case "get_contacts": {
+          // limit is "how many contacts to return", not "how many messages to
+          // sample" — unlike get_email_stats/get_email_analytics (which return
+          // one aggregate object, so their limit genuinely means sample size),
+          // get_contacts returns a ranked list. Reusing limit as the sample size
+          // meant limit: 5 silently ranked contacts from only 5 messages total.
           const limit = normalizeLimit(args.limit, 100);
-          const sample = await imapService.getAnalyticsSample(30, limit);
+          const sample = await imapService.getAnalyticsSample(30, 500);
           return createTextResult(
             analyticsService.getContacts(sample, limit, config.smtp.username),
           );
@@ -4518,7 +4600,11 @@ export function createServer(
             dateTo: optionalString(args, "dateTo"),
             limit: typeof args.limit === "number" ? args.limit : undefined,
           });
-          return createTextResult(result, false, result.emails.map(emailSource));
+          return createTextResult(
+            { ...result, emails: projectFields(result.emails, parseFieldsArg(args.fields)) },
+            false,
+            result.emails.map(emailSource),
+          );
         }
 
         case "get_labels":

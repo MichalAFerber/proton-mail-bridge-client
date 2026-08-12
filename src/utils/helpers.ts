@@ -599,3 +599,24 @@ export function renderMarkdown(markdown: string): { html: string; text: string }
 
   return { html, text: markdown };
 }
+
+// Trims each item in a list response to just the requested fields, for callers
+// that only need e.g. id/subject/from/date and don't want to pay the token cost
+// of the full EmailSummary (preview, attachments, labels, flags, ...) on every
+// row. "id" is always kept regardless of the requested field list, since it's
+// what every follow-up tool call (get_email_by_id, star_email, ...) needs.
+export function projectFields<T extends { id: string }>(
+  items: T[],
+  fields?: string[],
+): T[] | Array<Partial<T>> {
+  if (!fields || fields.length === 0) {
+    return items;
+  }
+
+  const keep = new Set(["id", ...fields]);
+  return items.map((item) =>
+    Object.fromEntries(
+      Object.entries(item).filter(([key]) => keep.has(key)),
+    ) as Partial<T>,
+  );
+}
