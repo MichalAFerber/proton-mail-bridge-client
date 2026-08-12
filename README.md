@@ -24,12 +24,12 @@
 
 ---
 
-Give Claude Desktop (or Cline, or any MCP client) full access to your Proton Mail inbox: read, search, send, draft, triage threads, manage folders, save attachments, and more. The same 40+ capabilities are also available as a full CLI for scripting, cron, and piped automation — no Claude required.
+Give Claude Desktop (or Cline, or any MCP client) full access to your Proton Mail inbox: read, search, send, draft, triage threads, manage folders, save attachments, and more — 78 MCP tools in total. Most of the same capabilities are also available as a full CLI for scripting, cron, and piped automation — no Claude required.
 
 ## What you get
 
 - **Claude reads and manages your Proton Mail** — triage, reply, draft, archive, search, move, batch-act on threads, pull attachments
-- **Full CLI** — same 40+ commands, scriptable and pipeable, works in cron and shell scripts
+- **Full CLI** — 73 commands covering nearly all of the same capabilities, scriptable and pipeable, works in cron and shell scripts
 - **Fast local search** — full-text search across your inbox without hitting IMAP on every query
 - **Safety controls** — read-only mode, send gate, destructive-action confirmation, per-action allowlist
 - **Privacy-native** — no third-party email service involved; your mail stays on your machine
@@ -194,6 +194,40 @@ The wizard handles config automatically. If you need to set it up by hand, three
 
 ---
 
+## Connect to Claude Code
+
+Install globally, then register the server with one command:
+
+```bash
+npm install -g proton-mail-bridge-client
+
+claude mcp add proton-mail-bridge \
+  -e PROTONMAIL_USERNAME=you@proton.me \
+  -e PROTONMAIL_PASSWORD=your-bridge-password \
+  -- proton-mail-bridge-mcp
+```
+
+`your-bridge-password` is the Bridge app's own password (**Bridge → account → Mailbox details**), not your Proton account password — see the note under [Prerequisites](#prerequisites).
+
+By default this registers the server for the current project only. Add `-s user` to make it available in every project:
+
+```bash
+claude mcp add proton-mail-bridge -s user \
+  -e PROTONMAIL_USERNAME=you@proton.me \
+  -e PROTONMAIL_PASSWORD=your-bridge-password \
+  -- proton-mail-bridge-mcp
+```
+
+Verify it's connected:
+
+```bash
+claude mcp list
+```
+
+For file-based or command-based credentials instead of plaintext env vars, add `-e PROTONMAIL_USERNAME_FILE=/path/to/file` (or `_COMMAND`) the same way — see the credential methods under [Manual config](#connect-to-claude-desktop) above.
+
+---
+
 ## Connect to Cline (VS Code)
 
 Install globally (`npm install -g proton-mail-bridge-client`), then open Cline's MCP settings:
@@ -247,6 +281,8 @@ Reload the Cline extension after saving. Proton Mail tools will appear in Cline'
 
 > **Tip:** When creating folders, use `Folders/Name` (not just `Name`) — that's the Proton Bridge namespace for real folders vs. labels.
 
+More recipes — expanded triage prompts, cron scripts for scheduled digests, and a Claude Code `/mail-triage` slash command — are in [examples/](examples/).
+
 ---
 
 ## Recommended System Prompt
@@ -268,144 +304,18 @@ Rules:
 
 ## CLI
 
-```bash
-proton-mail-bridge-client <command> [options]
-```
-
-All commands support `--json` for machine-readable output.
-
-### Read
+Every capability is also a scriptable terminal command — no Claude required:
 
 ```bash
-proton-mail-bridge-client emails --folder INBOX --limit 25
-proton-mail-bridge-client read INBOX::25642
-proton-mail-bridge-client search "invoice" --limit 10
-proton-mail-bridge-client search --live --from openai.com
-proton-mail-bridge-client attachments INBOX::25642
+proton-mail-bridge-client digest                                    # morning triage summary
+proton-mail-bridge-client search --from stripe.com --json | jq .    # scriptable search
+echo "Deploy done" | proton-mail-bridge-client send --to you@x.com --subject "Deploy"
+proton-mail-bridge-client notify &                                  # background new-mail alerts
 ```
 
-### Triage
+All commands support `--json` for machine-readable output, and any MCP tool is directly callable via `proton-mail-bridge-client tool <name> --args '{...}'`.
 
-```bash
-proton-mail-bridge-client digest
-proton-mail-bridge-client threads "quarterly review"
-proton-mail-bridge-client actionable
-proton-mail-bridge-client followups
-proton-mail-bridge-client thread-brief <threadId>
-proton-mail-bridge-client document-threads --category invoice
-proton-mail-bridge-client meeting-context alice@example.com
-```
-
-### Compose & send
-
-```bash
-proton-mail-bridge-client send --to bob@example.com --subject "Hey" --body "Hello"
-echo "Hello" | proton-mail-bridge-client send --to bob@example.com --subject "Hey"
-proton-mail-bridge-client reply INBOX::25642 --body "On it."
-proton-mail-bridge-client reply INBOX::25642 --reply-all --body "On it."
-proton-mail-bridge-client forward INBOX::25642 --to carol@example.com
-```
-
-### Mailbox actions
-
-```bash
-proton-mail-bridge-client move INBOX::25642 Folders/Archive
-proton-mail-bridge-client archive INBOX::25642
-proton-mail-bridge-client trash INBOX::25642
-proton-mail-bridge-client restore Trash::25642
-proton-mail-bridge-client mark-read INBOX::25642
-proton-mail-bridge-client mark-read INBOX::25642 --unread
-proton-mail-bridge-client star INBOX::25642
-proton-mail-bridge-client delete INBOX::25642
-proton-mail-bridge-client batch archive INBOX::100,INBOX::101,INBOX::102
-proton-mail-bridge-client thread-action <threadId> archive
-```
-
-### Folders
-
-```bash
-proton-mail-bridge-client folders
-proton-mail-bridge-client create-folder Folders/Receipts
-proton-mail-bridge-client rename-folder Folders/Receipts Folders/Bills
-proton-mail-bridge-client delete-folder Folders/Bills
-```
-
-### Drafts
-
-```bash
-proton-mail-bridge-client drafts
-proton-mail-bridge-client draft-create --to bob@example.com --subject "Draft" --body "..."
-proton-mail-bridge-client draft-read <id>
-proton-mail-bridge-client draft-update <id> --subject "Updated subject"
-proton-mail-bridge-client draft-reply INBOX::25642 --body "Will do."
-proton-mail-bridge-client draft-forward INBOX::25642 --to carol@example.com
-proton-mail-bridge-client draft-sync <id>
-proton-mail-bridge-client draft-send <id>
-proton-mail-bridge-client draft-delete <id>
-proton-mail-bridge-client remote-drafts
-```
-
-### Analytics & diagnostics
-
-```bash
-proton-mail-bridge-client stats
-proton-mail-bridge-client analytics
-proton-mail-bridge-client contacts
-proton-mail-bridge-client volume-trends --days 14
-proton-mail-bridge-client watch --timeout 30
-proton-mail-bridge-client test-email you@example.com
-proton-mail-bridge-client doctor
-proton-mail-bridge-client status
-proton-mail-bridge-client sync --folder INBOX --limit 150
-```
-
-### Ambient notifications
-
-Run as a background daemon — sends a system notification (macOS / Linux) whenever new mail arrives:
-
-```bash
-proton-mail-bridge-client notify                              # foreground (Ctrl+C to stop)
-proton-mail-bridge-client notify &                            # background
-proton-mail-bridge-client notify --folder INBOX --timeout 60  # custom folder and idle timeout
-```
-
-Each event is also written as a JSON line to stdout:
-
-```json
-{"event":"new_mail","folder":"INBOX","count":2,"at":"2026-05-18T14:32:01.000Z"}
-```
-
-Uses IMAP IDLE — no polling between events. Reconnects automatically on transient errors.
-
-### MCP tool passthrough
-
-Any MCP tool is also callable directly from the CLI:
-
-```bash
-proton-mail-bridge-client tools
-proton-mail-bridge-client tool get_connection_status --json
-proton-mail-bridge-client tool search_indexed_emails --args '{"query":"invoice","limit":3}'
-```
-
-### Pipe and script
-
-```bash
-# Morning digest to a file
-proton-mail-bridge-client digest --json > ~/morning-mail.json
-
-# Pull every email from a domain
-proton-mail-bridge-client search --from stripe.com --json | jq '.[].subject'
-
-# Pipe a script's output directly into an email
-echo "Deploy complete on $(hostname) at $(date)" \
-  | proton-mail-bridge-client send --to alerts@example.com --subject "Deploy done"
-
-# Scheduled digest every weekday at 8am (cron)
-0 8 * * 1-5 proton-mail-bridge-client digest >> ~/mail-log.txt
-
-# Count unread in INBOX
-proton-mail-bridge-client emails --folder INBOX --json | jq '[.[] | select(.isRead == false)] | length'
-```
+**Full command reference: [docs/cli.md](docs/cli.md)** (73 commands across read, triage, compose, mailbox actions, folders, drafts, analytics, and diagnostics).
 
 ---
 
@@ -500,7 +410,7 @@ PROTONMAIL_IDLE_MAX_SECONDS='30'
 `mark_email_read` · `star_email` · `move_email` · `archive_email` · `trash_email` · `restore_email` · `delete_email` · `batch_email_action` · `apply_thread_action` · `empty_folder` · `bulk_delete` · `bulk_move` · `bulk_update_flags` · `bulk_update_labels` · `update_message_flags` · `update_message_labels`
 
 ### Folder management
-`create_folder` · `rename_folder` · `delete_folder` · `create_label`
+`create_folder` · `rename_folder` · `delete_folder` · `create_label` · `rename_label` · `delete_label`
 
 ### Analytics
 `get_email_stats` · `get_email_analytics` · `get_contacts` · `get_volume_trends` · `folder_stats` · `top_senders`

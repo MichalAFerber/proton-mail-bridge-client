@@ -2,6 +2,103 @@
 
 All notable changes to this project are documented here.
 
+## [1.15.0] — 2026-08-11
+
+### Fixed
+- `get_email_by_id` no longer serializes structured headers (from/to/content-type/dkim-signature/list) as the literal string "[object Object]" — each known shape is now serialized properly
+- Local index sync never populated `preview`/`attachmentText`, so `search_indexed_emails` body search always silently returned nothing; now populated during indexing
+- Generic "An internal error occurred" replaced with classified, actionable guidance for authentication failures vs. Bridge being unreachable
+- `autoSyncFolder` now defaults to `INBOX,Sent` (was `INBOX` only), so `pendingOn`/digest/follow-up-candidates stop misreporting already-answered threads
+- `search_indexed_emails` now returns a `warnings[]` field when an FTS5 query has no safe terms or the query itself fails, instead of a silent empty result
+- `run_doctor` now classifies connection failures (`authentication_failed` vs `bridge_unreachable`), reports sync-failed drafts, and includes a capabilities report
+- No-change sync cycles no longer re-fetch and re-parse full message source on every tick; fixed a related data-loss risk where a flags-only sync could wipe previously-indexed preview/attachmentText
+
+### Added
+- Test coverage for SMTP message composition (header-injection neutralization, HTML sanitization, attachment round-trip) and analytics (contacts ranking, volume trends, sender/domain aggregation)
+
+## [1.14.0] — 2026-08-11
+
+### Added
+- `delete_label` and `rename_label` tools, closing [#7](https://github.com/googlarz/proton-mail-bridge-client/issues/7) — labels now have full CRUD (Proton labels are IMAP folders under `Labels/`, reusing the existing folder rename/delete plumbing)
+
+## [1.13.15] — 2026-08-05
+
+### Fixed
+- npm v12's `allowScripts` install-time security gate was silently blocking `better-sqlite3`'s native binding build in CI, failing every test that touched the local index — approved via npm's own `install-scripts approve` command
+
+## [1.13.13] — 2026-08-05
+
+### Fixed
+- Cleared 7 newly-disclosed dependency advisories (sanitize-html, ip-address, postcss, hono, fast-uri) via `npm audit fix`
+
+## [1.13.12] — 2026-07-20
+
+### Added
+- `./services` export subpath exposing `SimpleIMAPService` and `SMTPService` as a real library entry point
+
+### Fixed
+- Bumped nodemailer/imapflow/mailparser to clear a high-severity CI audit gate (disclosed nodemailer advisory)
+
+## [1.13.11] — 2026-07-20
+
+### Fixed
+- Global installs (`npm install -g`) launched via a symlinked bin exited silently with no output — the direct-execution guard now canonicalizes paths via `realpathSync` before comparing ([#4](https://github.com/googlarz/proton-mail-bridge-client/pull/4))
+
+## [1.13.10] — 2026-07-20
+
+### Fixed
+- `search_emails` picked the highest UIDs instead of the newest by date, silently dropping recent messages in mailboxes where UID order doesn't track date order ([#6](https://github.com/googlarz/proton-mail-bridge-client/issues/6))
+- `bridge-smoke.ts` sent real email and synced remote drafts even with `PROTONMAIL_READ_ONLY=true` ([#5](https://github.com/googlarz/proton-mail-bridge-client/issues/5))
+
+### Changed
+- Added a `Dockerfile` using `node:20-slim` for reliable Glama registry builds
+
+## [1.13.9] — 2026-06-09
+
+### Security
+- Fixed osascript shell injection in CLI notifications — replaced `exec()` with `execFile()` and an argument array
+
+## [1.13.8] — 2026-06-09
+
+### Security
+- Tightened `sanitize-html` to strip style/data attributes via a wildcard rule
+
+### Fixed
+- Updated MCP SDK from `^1.0.4` to `^1.11.0`
+- Moved `@types/*` packages from `dependencies` to `devDependencies`
+- Log buffer overflow now emits an stderr warning
+- `sanitizeFileName` strips `..` path traversal components and adds NFC normalization
+- Atomic audit log rotation (rename instead of rm+rename)
+- Audit log memory bounded with a line count cap
+- Sync backoff now logged at error level instead of warn
+- Background sync exposes `lastFailureMessage` in status
+- `applySnapshot` wrapped in a SQLite transaction
+- FTS5 crashes on NOT/AND/OR operator tokens — sanitized before query
+- Index freshness (`lastSyncAt`) included in search responses
+- Draft store resets in-memory state on write failure
+- Corrupted `drafts.json` backed up before silent recreation
+- IMAP `connect()` race condition — added inflight-promise guard
+- `getEmails` pagination uses filtered UID count for `effectiveTotal`
+- IDLE semaphore prevents multiple concurrent IDLE sessions
+- Duplicate attachment filenames get a numeric suffix
+- Zero-byte attachment guard before `content.toString()`
+
+### Documentation
+- Fixed Node.js badge to `>=18` (matches `engines` field)
+- Added 13 missing tools to the tool surface section
+
+## [1.13.7] — 2026-06-09
+
+### Added
+- `PROTONMAIL_TOOL_TIER=core` exposes 20 essential tools, reducing context-window burn
+- Auto-publish CI workflow on `v*` tag push
+
+### Fixed
+- Comprehensive tool disambiguation — all overlapping tools now cross-reference each other
+
+### Documentation
+- Privacy model section, ASCII banner restored, badges (last-commit, platforms, stars)
+
 ## [1.13.6] - 2026-06-09
 
 ### Security
