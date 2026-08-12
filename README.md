@@ -366,6 +366,7 @@ PROTONMAIL_ALLOW_REMOTE_DRAFT_SYNC='true'
 PROTONMAIL_ALLOWED_ACTIONS='mark_read,mark_unread,star,unstar,archive,trash,restore'
 PROTONMAIL_CONFIRM_DESTRUCTIVE='false'
 PROTONMAIL_SEND_DELAY_SECONDS='0'    # >0: send_email queues instead of sending immediately, cancelable via cancel_send. Only fires while this server stays running.
+PROTONMAIL_SIGNATURE=''              # Plain text, appended to send_email bodies (text + HTML). Opt out per-message with appendSignature: false.
 
 # Sync
 PROTONMAIL_AUTO_SYNC='true'

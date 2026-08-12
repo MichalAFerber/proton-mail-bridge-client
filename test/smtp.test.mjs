@@ -142,3 +142,60 @@ test("buildRawMessage adds Disposition-Notification-To only when requestReadRece
   });
   assert.ok(!withoutReceipt.toString("utf8").toLowerCase().includes("disposition-notification-to"));
 });
+
+test("buildRawMessage appends PROTONMAIL_SIGNATURE to text and HTML bodies by default", async () => {
+  const previous = process.env.PROTONMAIL_SIGNATURE;
+  process.env.PROTONMAIL_SIGNATURE = "Best,\nOwner";
+  try {
+    const service = new SMTPService(createConfig());
+    const raw = await service.buildRawMessage({
+      to: ["victim@example.com"],
+      subject: "Signature test",
+      body: "hello there",
+      htmlBody: "<p>hello there</p>",
+    });
+    const message = raw.toString("utf8");
+    assert.ok(message.includes("Best,"));
+    assert.ok(message.includes("Owner"));
+  } finally {
+    if (previous === undefined) delete process.env.PROTONMAIL_SIGNATURE;
+    else process.env.PROTONMAIL_SIGNATURE = previous;
+  }
+});
+
+test("buildRawMessage omits the signature when appendSignature is false", async () => {
+  const previous = process.env.PROTONMAIL_SIGNATURE;
+  process.env.PROTONMAIL_SIGNATURE = "Best,\nOwner";
+  try {
+    const service = new SMTPService(createConfig());
+    const raw = await service.buildRawMessage({
+      to: ["victim@example.com"],
+      subject: "No signature",
+      body: "hello there",
+      appendSignature: false,
+    });
+    assert.ok(!raw.toString("utf8").includes("Best,"));
+  } finally {
+    if (previous === undefined) delete process.env.PROTONMAIL_SIGNATURE;
+    else process.env.PROTONMAIL_SIGNATURE = previous;
+  }
+});
+
+test("buildRawMessage sends no signature block when PROTONMAIL_SIGNATURE is unset", async () => {
+  const previous = process.env.PROTONMAIL_SIGNATURE;
+  delete process.env.PROTONMAIL_SIGNATURE;
+  try {
+    const service = new SMTPService(createConfig());
+    const raw = await service.buildRawMessage({
+      to: ["victim@example.com"],
+      subject: "No signature configured",
+      body: "hello there",
+    });
+    const message = raw.toString("utf8");
+    assert.ok(message.includes("hello there"));
+    assert.ok(!message.includes("Best,"));
+  } finally {
+    if (previous === undefined) delete process.env.PROTONMAIL_SIGNATURE;
+    else process.env.PROTONMAIL_SIGNATURE = previous;
+  }
+});

@@ -82,6 +82,8 @@ export interface SendEmailInput {
   attachments?: EmailAttachmentInput[];
   /** Request a read receipt (MDN) by adding a Disposition-Notification-To header pointing at the sender. Most mail clients ask the recipient before honoring it — this is a request, not a guarantee. */
   requestReadReceipt?: boolean;
+  /** Append PROTONMAIL_SIGNATURE (if configured) to the body. Defaults to true. */
+  appendSignature?: boolean;
 }
 
 export interface EmailAttachmentSummary {

@@ -120,6 +120,7 @@ const TOOLS = [
         sanitizeHtml: { type: "boolean", description: "Strip scripts, event handlers, and remote image beacons from HTML before delivery. Defaults to true when body is HTML.", default: true },
         replyTo: { type: "string", description: "Optional reply-to email address." },
         requestReadReceipt: { type: "boolean", description: "Request a read receipt (MDN) via a Disposition-Notification-To header. Most mail clients ask the recipient before honoring it — this is a request, not a guarantee.", default: false },
+        appendSignature: { type: "boolean", description: "Append PROTONMAIL_SIGNATURE (if configured) to the body. Set false to send without it for this one message.", default: true },
         attachments: {
           type: "array",
           description: "Attachments with base64 encoded content.",
@@ -3152,6 +3153,7 @@ export function createServer(
             replyTo,
             attachments,
             requestReadReceipt: normalizeBoolean(args.requestReadReceipt, false),
+            appendSignature: normalizeBoolean(args.appendSignature, true),
           };
 
           // Undo-send: PROTONMAIL_SEND_DELAY_SECONDS > 0 queues instead of sending

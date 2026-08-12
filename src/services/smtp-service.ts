@@ -9,6 +9,15 @@ export function sanitizeHeader(value: string): string {
   return value.replace(/[\r\n\0]/g, " ").trim();
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export class SMTPService {
   private transporter?: Transporter;
 
@@ -174,14 +183,24 @@ export class SMTPService {
       ? this.sanitizeHtmlContent(htmlContent)
       : htmlContent;
 
+    // PROTONMAIL_SIGNATURE is plain text; appended to both the text body and,
+    // for HTML mail, as a <br><br> separated block escaped into the markup
+    // (kept simple — not itself HTML, so no separate sanitization concern).
+    const signature = process.env.PROTONMAIL_SIGNATURE?.trim();
+    const appendSignature = input.appendSignature !== false && Boolean(signature);
+    const finalBody = appendSignature ? `${input.body}\n\n${signature}` : input.body;
+    const finalHtml = appendSignature && sanitizedHtml
+      ? `${sanitizedHtml}<br><br>${escapeHtml(signature as string).replace(/\n/g, "<br>")}`
+      : sanitizedHtml;
+
     return {
       from,
       to: input.to.join(", "),
       cc: input.cc?.join(", "),
       bcc: input.bcc?.join(", "),
       subject,
-      text: sanitizedHtml ? input.body : (input.isHtml ? undefined : input.body),
-      html: sanitizedHtml,
+      text: finalHtml ? finalBody : (input.isHtml ? undefined : finalBody),
+      html: finalHtml,
       replyTo,
       inReplyTo,
       references,
