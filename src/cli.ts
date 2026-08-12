@@ -148,6 +148,10 @@ function printHelp(): void {
       "  draft-thread-reply <id> Create a reply draft for a thread",
       "  tools                  List every MCP tool exposed by the server",
       "  tool <name>            Call any MCP tool with JSON arguments",
+      "",
+      "Additional 1:1 tool commands (required args positional, rest via --args):",
+      ...TOOL_ONLY_COMMANDS.map((entry) => `  ${entry.command.padEnd(23)} ${entry.help}`),
+      "",
       "  claude setup           Run the interactive Claude Desktop setup wizard",
       "  claude install         Install or update the Claude Desktop runtime",
       "  claude check           Check Claude Desktop integration status",
@@ -1662,6 +1666,100 @@ async function runTool(parsed: ParsedCliArgs): Promise<void> {
   });
 }
 
+// Dedicated 1:1 CLI subcommand for every remaining MCP tool that has no
+// hand-written command above (either a brand-new tool, or an older one that
+// was only ever reachable via the generic `tool <name> --args` escape
+// hatch). Required fields are taken positionally, in schema order; anything
+// else (optional flags, arrays, nested objects) goes through --args, same
+// as `tool`. Tools with a friendlier hand-written command already above
+// (e.g. move_email -> `move`) are intentionally NOT duplicated here.
+interface ToolOnlyCommand {
+  command: string;
+  tool: string;
+  positionals: string[];
+  help: string;
+}
+
+export const TOOL_ONLY_COMMANDS: ToolOnlyCommand[] = [
+  { command: "cancel-send", tool: "cancel_send", positionals: ["id"], help: "Cancel a send queued by PROTONMAIL_SEND_DELAY_SECONDS" },
+  { command: "unsubscribe-info", tool: "get_unsubscribe_info", positionals: ["emailId"], help: "Read List-Unsubscribe details for a message" },
+  { command: "unsubscribe-sender", tool: "unsubscribe_sender", positionals: ["emailId"], help: "Execute a mailto unsubscribe (--args '{\"confirmed\":true}' if required)" },
+  { command: "reply-to-email", tool: "reply_to_email", positionals: ["emailId", "body"], help: "Immediately send a reply (full tool: attachments/dryRun via --args)" },
+  { command: "reply-all-email", tool: "reply_all_email", positionals: ["emailId"], help: "Immediately reply to all recipients (--args '{\"body\":...}')" },
+  { command: "forward-email", tool: "forward_email", positionals: ["emailId", "to"], help: "Immediately forward a message, preserving attachments" },
+  { command: "list-drafts", tool: "list_drafts", positionals: [], help: "List local drafts (tool form; see also `drafts`)" },
+  { command: "schedule-draft", tool: "schedule_draft", positionals: ["draftId", "sendAt"], help: "Queue a saved draft to send at a future time" },
+  { command: "get-email-by-id", tool: "get_email_by_id", positionals: ["emailId"], help: "Fetch one email (tool form; see also `read`)" },
+  { command: "get-emails-by-ids", tool: "get_emails_by_ids", positionals: ["emailIds"], help: "Fetch up to 25 emails by comma-separated ids" },
+  { command: "search-emails", tool: "search_emails", positionals: [], help: "Live IMAP search (tool form; see also `search --live`)" },
+  { command: "get-folders", tool: "get_folders", positionals: [], help: "List folders (tool form; see also `folders`)" },
+  { command: "sync-folders", tool: "sync_folders", positionals: [], help: "Refresh the in-memory folder list from IMAP" },
+  { command: "mark-email-read", tool: "mark_email_read", positionals: ["emailId"], help: "Mark read/unread (tool form; see also `mark-read`)" },
+  { command: "star-email", tool: "star_email", positionals: ["emailId"], help: "Star/unstar (tool form; see also `star`)" },
+  { command: "move-email", tool: "move_email", positionals: ["emailId", "targetFolder"], help: "Move an email (tool form; see also `move`)" },
+  { command: "archive-email", tool: "archive_email", positionals: ["emailId"], help: "Archive an email (tool form; see also `archive`)" },
+  { command: "trash-email", tool: "trash_email", positionals: ["emailId"], help: "Move to Trash (tool form; see also `trash`)" },
+  { command: "restore-email", tool: "restore_email", positionals: ["emailId"], help: "Restore from Trash (tool form; see also `restore`)" },
+  { command: "snooze-email", tool: "snooze_email", positionals: ["emailId", "wakeAt"], help: "Snooze a message until wakeAt (ISO timestamp)" },
+  { command: "cancel-snooze", tool: "cancel_snooze", positionals: ["id"], help: "Wake a snoozed email immediately" },
+  { command: "create-template", tool: "create_template", positionals: ["name", "subject", "body"], help: "Save a reusable email template" },
+  { command: "list-templates", tool: "list_templates", positionals: [], help: "List saved email templates" },
+  { command: "get-template", tool: "get_template", positionals: ["id"], help: "Get a saved template by id" },
+  { command: "delete-template", tool: "delete_template", positionals: ["id"], help: "Delete a saved template" },
+  { command: "render-template", tool: "render_template", positionals: ["id"], help: "Render a template ({{var}} substitution via --args '{\"variables\":{...}}')" },
+  { command: "delete-email", tool: "delete_email", positionals: ["emailId"], help: "Permanently delete (tool form; see also `delete`)" },
+  { command: "update-message-labels", tool: "update_message_labels", positionals: ["emailId"], help: "Add/remove Proton labels on one message" },
+  { command: "update-message-flags", tool: "update_message_flags", positionals: ["emailId"], help: "Add/remove IMAP flags on one message" },
+  { command: "count-messages", tool: "count_messages", positionals: [], help: "Count messages matching live IMAP search criteria" },
+  { command: "bulk-update-flags", tool: "bulk_update_flags", positionals: [], help: "Add/remove IMAP flags on multiple messages" },
+  { command: "bulk-update-labels", tool: "bulk_update_labels", positionals: [], help: "Add/remove Proton labels on multiple messages" },
+  { command: "top-senders", tool: "top_senders", positionals: [], help: "Top senders in a folder over a date range" },
+  { command: "move-thread", tool: "move_thread", positionals: ["messageId", "destination"], help: "Move every message in a thread" },
+  { command: "delete-thread", tool: "delete_thread", positionals: ["messageId"], help: "Delete every message in a thread" },
+  { command: "flag-thread", tool: "flag_thread", positionals: ["messageId"], help: "Add/remove IMAP flags across a thread" },
+  { command: "create-label", tool: "create_label", positionals: ["name"], help: "Create a Proton label" },
+  { command: "rename-label", tool: "rename_label", positionals: ["name", "newName"], help: "Rename a Proton label" },
+  { command: "delete-label", tool: "delete_label", positionals: ["name"], help: "Delete a Proton label" },
+  { command: "get-connection-status", tool: "get_connection_status", positionals: [], help: "(tool form; see also `connection-status`)" },
+  { command: "get-runtime-status", tool: "get_runtime_status", positionals: [], help: "(tool form; see also `runtime-status`)" },
+  { command: "run-doctor", tool: "run_doctor", positionals: [], help: "Full production health check (tool form; see also `doctor`)" },
+  { command: "run-background-sync", tool: "run_background_sync", positionals: [], help: "Trigger the configured background sync cycle now" },
+  { command: "sync-emails", tool: "sync_emails", positionals: [], help: "(tool form; see also `sync`)" },
+  { command: "get-index-status", tool: "get_index_status", positionals: [], help: "(tool form; see also `index-status`)" },
+  { command: "search-indexed-emails", tool: "search_indexed_emails", positionals: [], help: "(tool form; see also `search`)" },
+  { command: "get-labels", tool: "get_labels", positionals: [], help: "(tool form; see also `labels`)" },
+  { command: "get-threads", tool: "get_threads", positionals: [], help: "(tool form; see also `threads`)" },
+  { command: "get-inbox-digest", tool: "get_inbox_digest", positionals: [], help: "(tool form; see also `digest`)" },
+  { command: "get-follow-up-candidates", tool: "get_follow_up_candidates", positionals: [], help: "(tool form; see also `followups`)" },
+  { command: "list-attachments", tool: "list_attachments", positionals: ["emailId"], help: "(tool form; see also `attachments`)" },
+  { command: "get-attachment-content", tool: "get_attachment_content", positionals: ["emailId", "attachmentId"], help: "Fetch attachment metadata/base64" },
+  { command: "get-attachment-text", tool: "get_attachment_text", positionals: ["emailId", "attachmentId"], help: "Extract text from a text-like attachment" },
+  { command: "save-attachments", tool: "save_attachments", positionals: ["emailId"], help: "Save all attachments from an email to disk" },
+  { command: "save-attachment", tool: "save_attachment", positionals: ["emailId", "attachmentId"], help: "Save one attachment to disk" },
+  { command: "export-email", tool: "export_email", positionals: ["emailId"], help: "Save raw .eml source to disk" },
+  { command: "import-email", tool: "import_email", positionals: ["raw"], help: "Import a raw .eml message via IMAP APPEND" },
+  { command: "clear-index", tool: "clear_index", positionals: [], help: "Delete the local SQLite mailbox index" },
+  { command: "get-audit-logs", tool: "get_audit_logs", positionals: [], help: "Recent write-operation audit log entries" },
+];
+
+async function runToolOnlyCommand(entry: ToolOnlyCommand, parsed: ParsedCliArgs): Promise<void> {
+  const wantJson = isTruthyFlag(parsed.flags.json);
+  const args: Record<string, unknown> = {};
+  entry.positionals.forEach((field, index) => {
+    const value = parsed.positionals[index];
+    if (value === undefined) {
+      throw new Error(`${entry.command} requires: ${entry.positionals.join(", ")}`);
+    }
+    args[field] = value;
+  });
+  Object.assign(args, (await parseToolArgs(parsed)) ?? {});
+
+  await withMcpClient(async (client) => {
+    const result = await client.callTool({ name: entry.tool, arguments: args });
+    printToolCallResult(result as Record<string, unknown>, wantJson);
+  });
+}
+
 async function runClaude(parsed: ParsedCliArgs): Promise<void> {
   switch (parsed.subcommand) {
     case "setup":
@@ -1892,8 +1990,14 @@ export async function main(): Promise<void> {
     case "claude":
       await runClaude(parsed);
       return;
-    default:
+    default: {
+      const toolOnly = TOOL_ONLY_COMMANDS.find((entry) => entry.command === parsed.command);
+      if (toolOnly) {
+        await runToolOnlyCommand(toolOnly, parsed);
+        return;
+      }
       throw new Error(`Unknown command: ${parsed.command}`);
+    }
   }
 }
 

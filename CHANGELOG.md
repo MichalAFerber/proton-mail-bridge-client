@@ -17,6 +17,7 @@ All notable changes to this project are documented here.
 - `get_attachment_text`: first-class text extraction for `text/*` attachments, bypassing the base64 inline-size gate
 - `PROTONMAIL_SIGNATURE`: a plain-text signature auto-appended to `send_email` bodies (text + HTML), opt-out per-message via `appendSignature: false`
 - Email templates: `create_template`/`list_templates`/`get_template`/`delete_template`/`render_template` — named, persistent templates with `{{variable}}` substitution
+- CLI parity: every MCP tool now has a dedicated CLI subcommand (was previously only reachable for a subset via the generic `tool <name> --args` passthrough). Required fields are positional; everything else goes through `--args`
 
 **Caveat that applies to undo-send, scheduled-send, and snooze alike:** this is a stdio MCP server that exits when its client disconnects. Queued/snoozed items only fire while the server process stays alive; if it wasn't running at the target time, the item fires on next startup instead — not reliably at the requested time.
 

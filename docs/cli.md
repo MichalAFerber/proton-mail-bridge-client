@@ -111,9 +111,26 @@ Each event is also written as a JSON line to stdout:
 
 Uses IMAP IDLE — no polling between events. Reconnects automatically on transient errors.
 
+## 1:1 tool commands
+
+Every MCP tool has a dedicated CLI subcommand — either one of the friendlier
+named commands above, or, for tools without a hand-tuned command, a command
+matching the tool name (e.g. `snooze-email`, `create-template`,
+`get-attachment-text`). Required fields are positional; anything else
+(optional flags, arrays, nested objects) goes through `--args`, same as
+`tool` below. Run `proton-mail-bridge-client help` for the full list.
+
+```bash
+proton-mail-bridge-client snooze-email INBOX::123 2026-01-15T09:00:00.000Z
+proton-mail-bridge-client create-template welcome "Welcome, {{firstName}}!" "Hi {{firstName}}, thanks for joining."
+proton-mail-bridge-client render-template <id> --args '{"variables":{"firstName":"Alex"}}'
+proton-mail-bridge-client reply-to-email INBOX::123 "Sounds good, thanks!"
+```
+
 ## MCP tool passthrough
 
-Any MCP tool is also callable directly from the CLI:
+Any MCP tool is also callable directly from the CLI by name — useful for
+one-offs or tools you don't want a dedicated command name for:
 
 ```bash
 proton-mail-bridge-client tools
