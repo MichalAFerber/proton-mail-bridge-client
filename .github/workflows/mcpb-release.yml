@@ -1,0 +1,55 @@
+name: Build .mcpb bundles
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build .mcpb bundle
+        run: npm run package:mcpb
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcpb-${{ matrix.os }}
+          path: '*.mcpb'
+          if-no-files-found: error
+
+      # Best-effort: attach to the GitHub release for this tag if one already
+      # exists. Releases in this repo are created manually with hand-written
+      # notes after the tag is pushed, so this step commonly runs before that
+      # — that's fine, the workflow artifact above always has the bundle;
+      # attach it to the release by hand (or re-run this job) once it exists.
+      - name: Attach to GitHub release if it exists
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          gh release view "$TAG_NAME" >/dev/null 2>&1 && \
+            gh release upload "$TAG_NAME" *.mcpb --clobber || \
+            echo "No release exists yet for $TAG_NAME — bundle is available as a workflow artifact."

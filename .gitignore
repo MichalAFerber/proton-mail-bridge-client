@@ -33,3 +33,6 @@ parallel-test.js
 temp/
 tmp/
 *.tmp
+
+# Built Claude Desktop bundles (produced by npm run package:mcpb / CI, attached to releases)
+*.mcpb

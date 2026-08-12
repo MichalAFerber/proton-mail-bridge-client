@@ -1,0 +1,36 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.googlarz/proton-mail-bridge-client",
+  "description": "Full-featured CLI and Claude Desktop MCP server for Proton Mail via Proton Bridge — read, search, send, draft, triage threads, manage folders and labels, save attachments, and more. Everything runs locally over Bridge's IMAP/SMTP; no third-party relay ever touches your mail.",
+  "repository": {
+    "url": "https://github.com/googlarz/proton-mail-bridge-client",
+    "source": "github"
+  },
+  "version": "1.15.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "proton-mail-bridge-client",
+      "version": "1.15.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "PROTONMAIL_USERNAME",
+          "description": "Your Proton Mail address",
+          "isRequired": true,
+          "format": "string"
+        },
+        {
+          "name": "PROTONMAIL_PASSWORD",
+          "description": "Proton Bridge password (Bridge app -> account -> Mailbox details) — not your Proton account password",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

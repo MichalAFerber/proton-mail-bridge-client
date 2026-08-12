@@ -65,12 +65,13 @@ Why this is the right direction:
 
 ## `.mcpb` Packaging Checklist
 
-1. Add bundle manifest, icons, and extension metadata.
-2. Review every tool annotation for local extension requirements.
-3. Make config prompts portable and user-friendly for Desktop install.
-4. Package the extension with the official `mcpb` toolchain.
-5. Test one-click install on clean Claude Desktop setups.
-6. Submit the local extension for directory review when the bundle is polished enough.
+1. ✅ Bundle manifest (`mcpb/manifest.json`) — schema-validated against `@anthropic-ai/mcpb validate`.
+2. ⬜ Icons and extension metadata — manifest has no `icon`/`icons` yet, cosmetic only.
+3. ✅ Config prompts — `user_config` collects Proton Mail address + Bridge password (sensitive, masked) at install time, mapped straight to `PROTONMAIL_USERNAME`/`PROTONMAIL_PASSWORD`.
+4. ✅ Packaged with the official `mcpb` toolchain — `npm run package:mcpb` assembles a self-contained bundle (production `node_modules`, including the platform-specific `better-sqlite3` native binding) and packs it. Verified end-to-end on macOS: unpacked the bundle and launched `server/index.js` from it directly — starts cleanly, native binding loads, exits correctly on stdin close.
+5. ⬜ **Cross-platform builds are un-run.** `.github/workflows/mcpb-release.yml` has a macOS/Linux/Windows matrix that builds a bundle per platform on every `v*` tag push and uploads them as workflow artifacts (attaching to the GitHub release if one exists yet). This has never actually executed — needs a real tag push to confirm the Linux and Windows legs work, only the macOS path has been verified locally.
+6. ⬜ Test one-click *install* in the actual Claude Desktop app (this repo's verification only proved the packed server process starts correctly when launched directly — not the Desktop install/config-prompt UI flow).
+7. ⬜ Submit for directory review — not done, needs steps 2/5/6 first and your explicit go-ahead (first-time public listing).
 
 ## Recommended Product Positioning
 

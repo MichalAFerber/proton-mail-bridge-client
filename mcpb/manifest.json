@@ -1,0 +1,53 @@
+{
+  "manifest_version": "0.3",
+  "name": "proton-mail-bridge-client",
+  "display_name": "Proton Mail Bridge",
+  "version": "1.15.0",
+  "description": "Read, search, send, draft, and triage your Proton Mail inbox from Claude Desktop — entirely local via Proton Bridge, no third-party relay.",
+  "long_description": "Give Claude full access to your Proton Mail inbox: read, search, send, draft, triage threads, manage folders and labels, save attachments, and more — 78 tools in total.\n\nEvery step stays on your machine: Proton Bridge decrypts your mail locally and exposes it over local IMAP/SMTP, this server reads that local connection and builds a local SQLite search index, and Claude Desktop talks to it as a local stdio process. No email ever leaves your machine except through your own Proton account when you send.\n\nRequires Proton Bridge to be installed, signed in, and running first — see proton.me/mail/bridge.",
+  "author": {
+    "name": "googlarz",
+    "url": "https://github.com/googlarz"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/googlarz/proton-mail-bridge-client.git"
+  },
+  "homepage": "https://github.com/googlarz/proton-mail-bridge-client",
+  "documentation": "https://github.com/googlarz/proton-mail-bridge-client#readme",
+  "support": "https://github.com/googlarz/proton-mail-bridge-client/issues",
+  "license": "MIT",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "PROTONMAIL_USERNAME": "${user_config.protonmail_username}",
+        "PROTONMAIL_PASSWORD": "${user_config.protonmail_password}"
+      }
+    }
+  },
+  "user_config": {
+    "protonmail_username": {
+      "type": "string",
+      "title": "Proton Mail address",
+      "description": "Your full Proton Mail email address",
+      "required": true
+    },
+    "protonmail_password": {
+      "type": "string",
+      "title": "Bridge password",
+      "description": "Proton Bridge's own password (Bridge app -> account -> Mailbox details) — not your Proton account password",
+      "sensitive": true,
+      "required": true
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "runtimes": {
+      "node": ">=20.0.0"
+    }
+  }
+}
