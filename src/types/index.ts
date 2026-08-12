@@ -31,6 +31,21 @@ export interface EmailAttachmentInput {
   contentDisposition?: string;
 }
 
+export type DeliveryQueueKind = "undo_send" | "scheduled_send";
+export type DeliveryQueueStatus = "pending" | "sent" | "canceled" | "failed";
+
+export interface DeliveryQueueRecord {
+  id: string;
+  kind: DeliveryQueueKind;
+  createdAt: string;
+  sendAt: string;
+  status: DeliveryQueueStatus;
+  payload: SendEmailInput;
+  sentAt?: string;
+  sentMessageId?: string;
+  failureReason?: string;
+}
+
 export interface SendEmailInput {
   to: string[];
   cc?: string[];

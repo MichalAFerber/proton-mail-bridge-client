@@ -19,6 +19,7 @@ import { isMainModule } from "./is-main.js";
 import { AnalyticsService } from "./services/analytics-service.js";
 import { AuditService } from "./services/audit-service.js";
 import { BackgroundSyncService } from "./services/background-sync-service.js";
+import { DeliveryQueueService } from "./services/delivery-queue-service.js";
 import { DraftStoreService } from "./services/draft-store-service.js";
 import { LocalIndexService } from "./services/local-index-service.js";
 import { isLikelyAuthenticationError, isLikelyConnectionError, SimpleIMAPService } from "./services/simple-imap-service.js";
@@ -2828,9 +2829,11 @@ export function createServer(
     localIndexService,
     logger,
   );
+  const deliveryQueueService = new DeliveryQueueService(config, smtpService, logger);
 
   if (options.startBackgroundSync) {
     backgroundSyncService.start();
+    deliveryQueueService.start();
   }
 
   const server = new Server(
@@ -5296,13 +5299,14 @@ export function createServer(
     localIndexService,
     draftStore,
     backgroundSyncService,
+    deliveryQueueService,
     auditService,
   };
 }
 
 export async function main(): Promise<void> {
   const config = buildConfigFromEnv();
-  const { server, smtpService, imapService, backgroundSyncService } = createServer(config, {
+  const { server, smtpService, imapService, backgroundSyncService, deliveryQueueService } = createServer(config, {
     startBackgroundSync: true,
   });
 
@@ -5319,6 +5323,7 @@ export async function main(): Promise<void> {
     shuttingDown = true;
     logger.info(`Received ${reason}, shutting down`, "MCPServer");
     backgroundSyncService.stop();
+    deliveryQueueService.stop();
     await Promise.allSettled([imapService.disconnect(), smtpService.close()]);
     process.exit(0);
   };
