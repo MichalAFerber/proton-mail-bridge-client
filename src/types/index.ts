@@ -31,6 +31,21 @@ export interface EmailAttachmentInput {
   contentDisposition?: string;
 }
 
+export type SnoozeStatus = "pending" | "woken" | "canceled";
+
+export interface SnoozeRecord {
+  id: string;
+  createdAt: string;
+  wakeAt: string;
+  status: SnoozeStatus;
+  originalFolder: string;
+  // The email's current composite id — updates on every move (snooze-out,
+  // wake, or cancel-restore) since IMAP UIDs change when a message moves.
+  currentEmailId: string;
+  wokenAt?: string;
+  failureReason?: string;
+}
+
 export type DeliveryQueueKind = "undo_send" | "scheduled_send";
 export type DeliveryQueueStatus = "pending" | "sent" | "canceled" | "failed";
 

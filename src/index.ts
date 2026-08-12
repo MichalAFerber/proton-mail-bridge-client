@@ -24,6 +24,7 @@ import { DraftStoreService } from "./services/draft-store-service.js";
 import { LocalIndexService } from "./services/local-index-service.js";
 import { isLikelyAuthenticationError, isLikelyConnectionError, SimpleIMAPService } from "./services/simple-imap-service.js";
 import { SMTPService } from "./services/smtp-service.js";
+import { SnoozeService } from "./services/snooze-service.js";
 import type {
   BatchActionEntry,
   BatchActionResult,
@@ -522,6 +523,20 @@ const TOOLS = [
     },
   },
   {
+    name: "schedule_draft",
+    description: "Queue a saved draft to send at a future time instead of immediately. IMPORTANT: this only fires while this MCP server process stays running (it's a stdio server that exits when its client disconnects) — if the app is closed before sendAt, the send fires on next server startup instead of the originally requested time, not at sendAt itself. This is best-effort tied to the app being open, not a reliable scheduler. The draft's content is snapshotted at schedule time; the draft record itself is NOT automatically marked sent or deleted once it fires — check list_drafts or get_email_stats afterward, or clean it up yourself. Cancelable via cancel_send until it fires.",
+    annotations: { destructiveHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        draftId: { type: "string", description: "Draft id returned by create_draft, list_drafts, or a create_*_draft call." },
+        sendAt: { type: "string", description: "ISO 8601 timestamp of when to send, e.g. 2026-01-15T09:00:00.000Z. Must be in the future." },
+        confirmed: { type: "boolean", description: "Set to true to confirm when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
+      },
+      required: ["draftId", "sendAt"],
+    },
+  },
+  {
     name: "delete_draft",
     description: "Permanently delete a locally saved draft from SQLite. Use to discard a draft you no longer need. Does NOT remove a matching draft from the Proton Drafts IMAP folder — that requires a separate mailbox action. Irreversible.",
     annotations: { destructiveHint: true },
@@ -746,6 +761,31 @@ const TOOLS = [
         targetFolder: { type: "string", description: "Optional restore destination. Defaults to INBOX." },
       },
       required: ["emailId"],
+    },
+  },
+  {
+    name: "snooze_email",
+    description: "Move an email out of sight into Folders/Snoozed and bring it back to its original folder at wakeAt. IMPORTANT: like scheduled sends, wake only fires while this MCP server process stays running — if the app is closed before wakeAt, the email wakes on next server startup instead of at the requested time, not reliably at wakeAt itself. Cancelable via cancel_snooze, which wakes it immediately.",
+    annotations: { destructiveHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        emailId: { type: "string", description: "Composite email id in FOLDER::UID format." },
+        wakeAt: { type: "string", description: "ISO 8601 timestamp of when to bring it back, e.g. 2026-01-15T09:00:00.000Z. Must be in the future." },
+      },
+      required: ["emailId", "wakeAt"],
+    },
+  },
+  {
+    name: "cancel_snooze",
+    description: "Wake a snoozed email immediately, moving it back to its original folder before wakeAt. No effect (throws) if the snooze has already woken or was already canceled.",
+    annotations: { destructiveHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The id returned by snooze_email." },
+      },
+      required: ["id"],
     },
   },
   {
@@ -2845,10 +2885,12 @@ export function createServer(
     logger,
   );
   const deliveryQueueService = new DeliveryQueueService(config, smtpService, logger);
+  const snoozeService = new SnoozeService(config, imapService, logger);
 
   if (options.startBackgroundSync) {
     backgroundSyncService.start();
     deliveryQueueService.start();
+    snoozeService.start();
   }
 
   const server = new Server(
@@ -3851,6 +3893,60 @@ export function createServer(
           );
         }
 
+        case "schedule_draft": {
+          ensureDestructiveConfirmed(config.runtime, normalizeBoolean(args.confirmed, false), `Schedule draft ${String(args.draftId ?? "?")} to send later`);
+          ensureSendAllowed(config.runtime);
+          const draft = await draftStore.getDraft(requireString(args, "draftId"));
+          const sendAt = requireString(args, "sendAt");
+          const sendAtTime = new Date(sendAt).getTime();
+          if (Number.isNaN(sendAtTime)) {
+            throw new McpError(ErrorCode.InvalidParams, `sendAt is not a valid ISO 8601 timestamp: ${sendAt}`);
+          }
+          if (sendAtTime <= Date.now()) {
+            throw new McpError(ErrorCode.InvalidParams, "sendAt must be in the future. Use send_draft to send immediately.");
+          }
+          ensureValidEmails(draft.to, "to");
+          ensureValidEmails(draft.cc, "cc");
+          ensureValidEmails(draft.bcc, "bcc");
+          if (draft.replyTo && !isValidEmail(draft.replyTo)) {
+            throw new McpError(ErrorCode.InvalidParams, "replyTo must be a valid email address.");
+          }
+          if (config.runtime.restrictOutboundToSelf) {
+            const allRecipients = [...draft.to, ...draft.cc, ...draft.bcc];
+            const selfAddr = config.imap.username.toLowerCase();
+            const external = allRecipients.filter((r) => r.toLowerCase() !== selfAddr);
+            if (external.length > 0) throw new McpError(ErrorCode.InvalidParams, "PROTONMAIL_RESTRICT_OUTBOUND_TO_SELF is enabled. All recipients must be the authenticated user.");
+          }
+
+          const queued = await withAudit(auditService, name, args, async () =>
+            deliveryQueueService.enqueue(
+              {
+                to: draft.to,
+                cc: draft.cc,
+                bcc: draft.bcc,
+                subject: draft.subject,
+                body: draft.body,
+                isHtml: draft.isHtml,
+                priority: draft.priority,
+                replyTo: draft.replyTo,
+                inReplyTo: draft.inReplyTo,
+                references: draft.references,
+                attachments: draft.attachments,
+              },
+              new Date(sendAtTime).toISOString(),
+              "scheduled_send",
+            ),
+          );
+
+          return createTextResult({
+            queued: true,
+            id: queued.id,
+            draftId: draft.id,
+            sendAt: queued.sendAt,
+            note: "The draft's content was snapshotted now and queued. This server must stay running for the send to fire at sendAt — if restarted first, it fires on next startup instead. The draft record itself is not automatically marked sent; use cancel_send with this id to abort before it fires.",
+          });
+        }
+
         case "delete_draft": {
           const draft = await draftStore.getDraft(requireString(args, "draftId"));
           const deleted = await withAudit(auditService, name, args, async () => {
@@ -4458,6 +4554,34 @@ export function createServer(
               ]
             : [];
           return createTextResult(result, false, sources);
+        }
+
+        case "snooze_email": {
+          ensureEmailActionAllowed(config.runtime, "archive");
+          const wakeAt = requireString(args, "wakeAt");
+          const wakeAtTime = new Date(wakeAt).getTime();
+          if (Number.isNaN(wakeAtTime)) {
+            throw new McpError(ErrorCode.InvalidParams, `wakeAt is not a valid ISO 8601 timestamp: ${wakeAt}`);
+          }
+          if (wakeAtTime <= Date.now()) {
+            throw new McpError(ErrorCode.InvalidParams, "wakeAt must be in the future.");
+          }
+          const snoozed = await withAudit(auditService, name, args, async () =>
+            snoozeService.snooze(requireString(args, "emailId"), new Date(wakeAtTime).toISOString()),
+          );
+          return createTextResult({
+            id: snoozed.id,
+            emailId: snoozed.currentEmailId,
+            wakeAt: snoozed.wakeAt,
+            note: "This server must stay running for the wake to fire at wakeAt — if restarted first, it wakes on next startup instead. Cancelable via cancel_snooze.",
+          });
+        }
+
+        case "cancel_snooze": {
+          const result = await withAudit(auditService, name, args, async () =>
+            snoozeService.cancel(requireString(args, "id")),
+          );
+          return createTextResult(result);
         }
 
         case "delete_email":
@@ -5339,13 +5463,14 @@ export function createServer(
     draftStore,
     backgroundSyncService,
     deliveryQueueService,
+    snoozeService,
     auditService,
   };
 }
 
 export async function main(): Promise<void> {
   const config = buildConfigFromEnv();
-  const { server, smtpService, imapService, backgroundSyncService, deliveryQueueService } = createServer(config, {
+  const { server, smtpService, imapService, backgroundSyncService, deliveryQueueService, snoozeService } = createServer(config, {
     startBackgroundSync: true,
   });
 
@@ -5363,6 +5488,7 @@ export async function main(): Promise<void> {
     logger.info(`Received ${reason}, shutting down`, "MCPServer");
     backgroundSyncService.stop();
     deliveryQueueService.stop();
+    snoozeService.stop();
     await Promise.allSettled([imapService.disconnect(), smtpService.close()]);
     process.exit(0);
   };
