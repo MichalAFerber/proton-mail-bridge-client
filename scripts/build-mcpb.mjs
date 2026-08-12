@@ -17,10 +17,16 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const platform = process.platform; // darwin | win32 | linux
 const arch = process.arch; // arm64 | x64 | ...
+// On Windows, npm/npx resolve to .cmd shims — execFileSync needs shell:true
+// there to find them at all (fails with ENOENT otherwise).
+const isWindows = platform === "win32";
+function run(command, args, options) {
+  execFileSync(command, args, { ...options, shell: isWindows });
+}
 
 console.log(`Building .mcpb bundle for ${platform}-${arch} (v${pkg.version})...`);
 
-execFileSync("npm", ["run", "build"], { cwd: root, stdio: "inherit" });
+run("npm", ["run", "build"], { cwd: root, stdio: "inherit" });
 
 const staging = mkdtempSync(join(tmpdir(), "proton-mcpb-"));
 const serverDir = join(staging, "server");
@@ -35,7 +41,7 @@ try {
   delete stagedPkg.scripts?.prepare;
   writeFileSync(join(staging, "package.json"), JSON.stringify(stagedPkg, null, 2));
   cpSync(join(root, "package-lock.json"), join(staging, "package-lock.json"));
-  execFileSync("npm", ["ci", "--omit=dev"], { cwd: staging, stdio: "inherit" });
+  run("npm", ["ci", "--omit=dev"], { cwd: staging, stdio: "inherit" });
   cpSync(join(root, "dist"), serverDir, { recursive: true });
 
   const manifest = JSON.parse(readFileSync(join(root, "mcpb", "manifest.json"), "utf8"));
@@ -45,7 +51,7 @@ try {
   writeFileSync(join(staging, "manifest.json"), JSON.stringify(manifest, null, 2));
 
   const outFile = join(root, `proton-mail-bridge-client-${platform}-${arch}.mcpb`);
-  execFileSync("npx", ["--yes", "@anthropic-ai/mcpb", "pack", staging, outFile], {
+  run("npx", ["--yes", "@anthropic-ai/mcpb", "pack", staging, outFile], {
     cwd: root,
     stdio: "inherit",
   });
