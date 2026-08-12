@@ -25,6 +25,7 @@ import { LocalIndexService } from "./services/local-index-service.js";
 import { isLikelyAuthenticationError, isLikelyConnectionError, SimpleIMAPService } from "./services/simple-imap-service.js";
 import { SMTPService } from "./services/smtp-service.js";
 import { SnoozeService } from "./services/snooze-service.js";
+import { TemplateService } from "./services/template-service.js";
 import type {
   BatchActionEntry,
   BatchActionResult,
@@ -786,6 +787,64 @@ const TOOLS = [
       type: "object",
       properties: {
         id: { type: "string", description: "The id returned by snooze_email." },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "create_template",
+    description: "Save a reusable email template. Subject and body may contain {{variable}} placeholders (e.g. {{firstName}}), auto-detected and stored on the template. Fails if a template with the same name already exists — delete it first to replace it.",
+    annotations: { destructiveHint: false },
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Unique template name." },
+        subject: { type: "string", description: "Subject line, may contain {{variable}} placeholders." },
+        body: { type: "string", description: "Body text, may contain {{variable}} placeholders." },
+        isHtml: { type: "boolean", description: "Whether body is HTML.", default: false },
+      },
+      required: ["name", "subject", "body"],
+    },
+  },
+  {
+    name: "list_templates",
+    description: "List all saved email templates.",
+    annotations: { readOnlyHint: true },
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "get_template",
+    description: "Get a single saved email template by id.",
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string", description: "The template id, as returned by create_template or list_templates." } },
+      required: ["id"],
+    },
+  },
+  {
+    name: "delete_template",
+    description: "Delete a saved email template.",
+    annotations: { destructiveHint: true },
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string", description: "The template id." } },
+      required: ["id"],
+    },
+  },
+  {
+    name: "render_template",
+    description: "Render a saved template's subject and body, substituting {{variable}} placeholders with the given values. Placeholders left unfilled stay literal (e.g. {{firstName}}) and are listed in missingVariables. Pass the result to send_email.",
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The template id." },
+        variables: {
+          type: "object",
+          description: "Map of variable name to replacement value, e.g. { \"firstName\": \"Alex\" }.",
+          additionalProperties: { type: "string" },
+        },
       },
       required: ["id"],
     },
@@ -2936,6 +2995,7 @@ export function createServer(
   );
   const deliveryQueueService = new DeliveryQueueService(config, smtpService, logger);
   const snoozeService = new SnoozeService(config, imapService, logger);
+  const templateService = new TemplateService(config, logger);
 
   if (options.startBackgroundSync) {
     backgroundSyncService.start();
@@ -4632,6 +4692,45 @@ export function createServer(
         case "cancel_snooze": {
           const result = await withAudit(auditService, name, args, async () =>
             snoozeService.cancel(requireString(args, "id")),
+          );
+          return createTextResult(result);
+        }
+
+        case "create_template": {
+          const result = await withAudit(auditService, name, args, async () =>
+            templateService.create({
+              name: requireString(args, "name"),
+              subject: requireString(args, "subject"),
+              body: requireString(args, "body"),
+              isHtml: normalizeBoolean(args.isHtml, false),
+            }),
+          );
+          return createTextResult(result);
+        }
+
+        case "list_templates": {
+          const result = await withAudit(auditService, name, args, async () => templateService.list());
+          return createTextResult(result);
+        }
+
+        case "get_template": {
+          const result = await withAudit(auditService, name, args, async () =>
+            templateService.get(requireString(args, "id")),
+          );
+          return createTextResult(result);
+        }
+
+        case "delete_template": {
+          const result = await withAudit(auditService, name, args, async () =>
+            templateService.delete(requireString(args, "id")),
+          );
+          return createTextResult(result);
+        }
+
+        case "render_template": {
+          const variables = (args.variables && typeof args.variables === "object" ? args.variables : {}) as Record<string, string>;
+          const result = await withAudit(auditService, name, args, async () =>
+            templateService.render(requireString(args, "id"), variables),
           );
           return createTextResult(result);
         }

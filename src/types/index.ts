@@ -46,6 +46,16 @@ export interface SnoozeRecord {
   failureReason?: string;
 }
 
+export interface EmailTemplateRecord {
+  id: string;
+  name: string;
+  subject: string;
+  body: string;
+  isHtml: boolean;
+  variables: string[];
+  createdAt: string;
+}
+
 export type DeliveryQueueKind = "undo_send" | "scheduled_send";
 export type DeliveryQueueStatus = "pending" | "sent" | "canceled" | "failed";
 

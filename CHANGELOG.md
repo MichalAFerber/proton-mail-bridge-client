@@ -2,6 +2,40 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+- `get_emails_by_ids`: batch-read up to 25 emails by composite id in one call
+- `projectFields` support on `get_emails`/`search_emails`/`search_indexed_emails`, letting callers trim response payloads to just the fields they need
+- One-click unsubscribe: `get_unsubscribe_info` (parses `List-Unsubscribe`) and `unsubscribe_sender` (executes a mailto unsubscribe)
+- Message trust panel: `get_email_by_id` now includes a `security` block (encryption, DKIM/SPF/DMARC verdicts, spam score, x-pm-* origin) parsed from real headers
+- Undo-send: `PROTONMAIL_SEND_DELAY_SECONDS` queues `send_email` instead of sending immediately, cancelable via the new `cancel_send` tool
+- Scheduled send: `schedule_draft` queues a draft to send at a future timestamp
+- Snooze: `snooze_email`/`cancel_snooze` move a message out of sight and bring it back at a chosen time
+- `export_email`/`import_email`: round-trip a message to/from a local `.eml` file
+- `requestReadReceipt` on `send_email` (adds a `Disposition-Notification-To` header); `get_email_by_id` surfaces `readReceiptRequested` on inbound mail
+- `get_attachment_text`: first-class text extraction for `text/*` attachments, bypassing the base64 inline-size gate
+- `PROTONMAIL_SIGNATURE`: a plain-text signature auto-appended to `send_email` bodies (text + HTML), opt-out per-message via `appendSignature: false`
+- Email templates: `create_template`/`list_templates`/`get_template`/`delete_template`/`render_template` — named, persistent templates with `{{variable}}` substitution
+
+**Caveat that applies to undo-send, scheduled-send, and snooze alike:** this is a stdio MCP server that exits when its client disconnects. Queued/snoozed items only fire while the server process stays alive; if it wasn't running at the target time, the item fires on next startup instead — not reliably at the requested time.
+
+## [1.16.0] — 2026-08-12
+
+Wave B: docs, distribution, and packaging readiness — no runtime behavior changes.
+
+### Added
+- Claude Code section in README with the verified `claude mcp add` one-liner
+- `examples/` — expanded triage prompts, cron scripts, and a Claude Code `/mail-triage` slash command
+- `server.json` prepped for the official MCP registry (schema-validated; submission held pending a bin-resolution design decision — this package ships 3 npm bins and `npx <package-name>` resolves to the CLI, not the MCP server)
+- Claude Desktop `.mcpb` one-click bundle (schema-validated manifest, verified end-to-end by unpacking and launching the built bundle) with a CI matrix building macOS/Linux/Windows artifacts on every tag push
+
+### Changed
+- Backfilled CHANGELOG.md (was 9 releases behind) and created 6 missing GitHub releases that existed only as tags
+- Fixed stale "40+ capabilities/commands" claims in docs — now states real counts
+- Moved the CLI reference out of README into `docs/cli.md`
+- Set the GitHub repo homepage URL
+
 ## [1.15.0] — 2026-08-11
 
 ### Fixed

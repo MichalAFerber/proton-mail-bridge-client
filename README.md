@@ -357,7 +357,7 @@ PROTONMAIL_PASSWORD_COMMAND='pass proton/password'
 PROTONMAIL_DATA_DIR="$HOME/.proton-mail-bridge-client"
 
 # Tools
-PROTONMAIL_TOOL_TIER='full'          # 'core' exposes 20 essential tools (saves context window); 'full' exposes all 82
+PROTONMAIL_TOOL_TIER='full'          # 'core' exposes 20 essential tools (saves context window); 'full' exposes all 93
 
 # Safety
 PROTONMAIL_READ_ONLY='false'
