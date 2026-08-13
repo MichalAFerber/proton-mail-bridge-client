@@ -39,7 +39,6 @@ export function renderTemplateText(text: string, variables: Record<string, strin
 export class TemplateService {
   private readonly storePath: string;
   private _lock: Promise<void> = Promise.resolve();
-  private loadedStore?: TemplateFile;
 
   constructor(
     private readonly config: ProtonMailConfig,
@@ -128,23 +127,18 @@ export class TemplateService {
     return this.withLock(() => this.loadUnlocked());
   }
 
+  // Always reads from disk (no in-memory cache) — see the identical comment
+  // in DeliveryQueueService.loadUnlocked for why.
   private async loadUnlocked(): Promise<TemplateFile> {
-    if (this.loadedStore) {
-      return this.loadedStore;
-    }
-
     await this.cleanOrphanedTempFiles();
 
     try {
       const raw = await readFile(this.storePath, "utf8");
       const parsed = JSON.parse(raw) as TemplateFile;
-      this.loadedStore = { ...createEmptyStore(), ...parsed };
-      return this.loadedStore;
+      return { ...createEmptyStore(), ...parsed };
     } catch (error) {
       if (error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "ENOENT") {
-        const empty = createEmptyStore();
-        this.loadedStore = empty;
-        return empty;
+        return createEmptyStore();
       }
 
       const corruptPath = `${this.storePath}.corrupt`;
@@ -155,9 +149,7 @@ export class TemplateService {
         this.log.error("Failed to back up corrupted templates.json — recreating empty store without backup", "TemplateService", { parseError: error, backupError });
       }
 
-      const empty = createEmptyStore();
-      this.loadedStore = empty;
-      return empty;
+      return createEmptyStore();
     }
   }
 
@@ -181,13 +173,7 @@ export class TemplateService {
   private async save(store: TemplateFile): Promise<void> {
     await mkdir(dirname(this.storePath), { recursive: true });
     const tempPath = `${this.storePath}.tmp`;
-    try {
-      await writeFile(tempPath, JSON.stringify(store, null, 2), "utf8");
-      await rename(tempPath, this.storePath);
-    } catch (error) {
-      this.loadedStore = undefined;
-      throw error;
-    }
-    this.loadedStore = store;
+    await writeFile(tempPath, JSON.stringify(store, null, 2), "utf8");
+    await rename(tempPath, this.storePath);
   }
 }

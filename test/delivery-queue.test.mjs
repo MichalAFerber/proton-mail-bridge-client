@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DeliveryQueueService } from "../dist/services/delivery-queue-service.js";
@@ -168,5 +168,133 @@ test("a queue reopened against the same dataDir sees items persisted by a prior 
     assert.equal(smtp2.sent.length, 1);
     const after = await queue2.get(record.id);
     assert.equal(after.status, "sent");
+  });
+});
+
+// Regression: cancel() racing an in-flight send must never report
+// canceled:true for an email that actually goes out, and the item must never
+// be sent twice by an overlapping checkDue() pass.
+test("cancel() called while checkDue() is mid-send does not report canceled:true and does not stop the send", async () => {
+  await withTempDir(async (dataDir) => {
+    const config = createConfig(dataDir);
+    let releaseSend;
+    const smtp = {
+      sent: [],
+      async sendEmail(p) {
+        // Block until the test explicitly lets the send proceed, giving
+        // cancel() a real window to race against the in-flight send.
+        await new Promise((resolve) => { releaseSend = resolve; });
+        this.sent.push(p);
+        return { messageId: "<race@example.com>", accepted: p.to, rejected: [] };
+      },
+    };
+    const queue = new DeliveryQueueService(config, smtp);
+    const record = await queue.enqueue(payload, new Date(Date.now() - 1_000).toISOString(), "undo_send");
+
+    const checkDuePromise = queue.checkDue();
+    // Wait for checkDue to reach the blocking sendEmail call (item is
+    // claimed as "sending" by then).
+    while (!releaseSend) await new Promise((r) => setTimeout(r, 5));
+
+    const cancelResult = await queue.cancel(record.id);
+    assert.equal(cancelResult.canceled, false, "must not claim to cancel a send already in flight");
+    assert.equal(cancelResult.status, "sending");
+
+    releaseSend();
+    await checkDuePromise;
+
+    assert.equal(smtp.sent.length, 1, "the email must actually have been sent");
+    const after = await queue.get(record.id);
+    assert.equal(after.status, "sent", "final status must reflect reality, not a stale cancel");
+  });
+});
+
+test("checkDue marks an item failed instead of sending when runtime policy forbids sending", async () => {
+  await withTempDir(async (dataDir) => {
+    const config = createConfig(dataDir);
+    config.runtime.allowSend = false;
+    const smtp = fakeSmtp();
+    const queue = new DeliveryQueueService(config, smtp);
+    const record = await queue.enqueue(payload, new Date(Date.now() - 1_000).toISOString(), "scheduled_send");
+
+    const result = await queue.checkDue();
+    assert.equal(result.failed, 1);
+    assert.equal(smtp.sent.length, 0, "must not send when allowSend is false, even though it was true at enqueue time");
+
+    const after = await queue.get(record.id);
+    assert.equal(after.status, "failed");
+    assert.match(after.failureReason, /policy/i);
+  });
+});
+
+test("checkDue marks an item failed instead of sending when restrictOutboundToSelf blocks the recipient", async () => {
+  await withTempDir(async (dataDir) => {
+    const config = createConfig(dataDir);
+    config.runtime.restrictOutboundToSelf = true;
+    const smtp = fakeSmtp();
+    const queue = new DeliveryQueueService(config, smtp);
+    const record = await queue.enqueue(payload, new Date(Date.now() - 1_000).toISOString(), "scheduled_send");
+
+    const result = await queue.checkDue();
+    assert.equal(result.failed, 1);
+    assert.equal(smtp.sent.length, 0);
+
+    const after = await queue.get(record.id);
+    assert.equal(after.status, "failed");
+    assert.match(after.failureReason, /RESTRICT_OUTBOUND_TO_SELF/);
+  });
+});
+
+test("a 'sending' record left over from a crashed process is never auto-resent on the next start", async () => {
+  await withTempDir(async (dataDir) => {
+    const config = createConfig(dataDir);
+    await mkdir(dataDir, { recursive: true });
+    const stuckId = "stuck-item-1";
+    await writeFile(
+      join(dataDir, "delivery-queue.json"),
+      JSON.stringify({
+        version: 1,
+        items: {
+          [stuckId]: {
+            id: stuckId,
+            kind: "undo_send",
+            createdAt: new Date(Date.now() - 60_000).toISOString(),
+            sendAt: new Date(Date.now() - 1_000).toISOString(),
+            status: "sending",
+            payload,
+          },
+        },
+      }, null, 2),
+      "utf8",
+    );
+
+    const smtp = fakeSmtp();
+    const queue = new DeliveryQueueService(config, smtp);
+    await queue.start();
+    queue.stop();
+    // start() awaits recoverInterruptedSends before its catch-up checkDue,
+    // but checkDue itself is fired-and-forgotten (`void`) — give it a tick.
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.equal(smtp.sent.length, 0, "must never resend an item whose outcome is unknown");
+    const after = await queue.get(stuckId);
+    assert.equal(after.status, "failed");
+    assert.match(after.failureReason, /restart|interrupted/i);
+  });
+});
+
+test("a second process writing the same dataDir is visible without restarting this instance (no forever-cache)", async () => {
+  await withTempDir(async (dataDir) => {
+    const config = createConfig(dataDir);
+    const queueA = new DeliveryQueueService(config, fakeSmtp());
+    const record = await queueA.enqueue(payload, new Date(Date.now() + 60_000).toISOString(), "scheduled_send");
+
+    // Simulate a second process (e.g. the CLI) cancelling it directly on disk.
+    const queueB = new DeliveryQueueService(config, fakeSmtp());
+    await queueB.cancel(record.id);
+
+    // queueA must see the cancellation on its next read, not a stale cache.
+    const seenByA = await queueA.get(record.id);
+    assert.equal(seenByA.status, "canceled");
   });
 });

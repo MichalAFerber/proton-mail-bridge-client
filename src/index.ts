@@ -23,7 +23,7 @@ import { DeliveryQueueService } from "./services/delivery-queue-service.js";
 import { DraftStoreService } from "./services/draft-store-service.js";
 import { LocalIndexService } from "./services/local-index-service.js";
 import { isLikelyAuthenticationError, isLikelyConnectionError, SimpleIMAPService } from "./services/simple-imap-service.js";
-import { SMTPService } from "./services/smtp-service.js";
+import { applySignature, SMTPService } from "./services/smtp-service.js";
 import { SnoozeService } from "./services/snooze-service.js";
 import { TemplateService } from "./services/template-service.js";
 import type {
@@ -59,6 +59,7 @@ import {
   ensureDestructiveConfirmed,
   ensureEmailActionAllowed,
   ensureMailboxWriteAllowed,
+  ensureOutboundRecipientsAllowed,
   ensureRemoteDraftSyncAllowed,
   ensureSendAllowed,
   resolveRemoteDraftSync,
@@ -156,6 +157,17 @@ const TOOLS = [
     },
   },
   {
+    name: "list_scheduled_sends",
+    description: "List every item in the local undo-send / scheduled-send queue (from send_email with PROTONMAIL_SEND_DELAY_SECONDS set, or schedule_draft), including its id, status, and sendAt — use this to rediscover the id needed for cancel_send if it was lost with the conversation.",
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        status: { type: "string", enum: ["pending", "sending", "sent", "canceled", "failed"], description: "Filter to one status. Omit to list everything." },
+      },
+    },
+  },
+  {
     name: "get_unsubscribe_info",
     description: "Read the List-Unsubscribe header of a message and report how to unsubscribe from it — a mailto address, an https link, or both. Does not take any action. Use before unsubscribe_sender to see what's available, or to hand an https link to the user/agent to open manually (this server never auto-fetches unsubscribe URLs).",
     annotations: { readOnlyHint: true },
@@ -227,6 +239,7 @@ const TOOLS = [
         confirmed: { type: "boolean", description: "Set to true to confirm this irreversible send when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
         dryRun: { type: "boolean", description: "Preview recipient set and threading headers without sending.", default: false },
         includeQuote: { type: "boolean", description: "Append the quoted original message to the reply body.", default: true },
+        appendSignature: { type: "boolean", description: "Append PROTONMAIL_SIGNATURE (if configured) after your reply text and before the quoted original. Set false to send without it for this one message.", default: true },
       },
       required: ["emailId", "body"],
     },
@@ -264,6 +277,7 @@ const TOOLS = [
         confirmed: { type: "boolean", description: "Set to true to confirm this irreversible send when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
         dryRun: { type: "boolean", description: "Preview full reply-all fan-out without sending.", default: false },
         includeQuote: { type: "boolean", description: "Append the quoted original message to the reply body.", default: true },
+        appendSignature: { type: "boolean", description: "Append PROTONMAIL_SIGNATURE (if configured) after your reply text and before the quoted original. Set false to send without it for this one message.", default: true },
       },
       required: ["emailId"],
     },
@@ -303,6 +317,7 @@ const TOOLS = [
         dryRun: { type: "boolean", description: "Preview recipients without sending.", default: false },
         includeAttachments: { type: "boolean", description: "Include original attachments in the forward.", default: true },
         attachmentParts: { type: "array", items: { type: "string" }, description: "Forward only specific MIME part numbers, e.g. [\"2\", \"3.1\"]. Mutually exclusive with includeAttachments:false." },
+        appendSignature: { type: "boolean", description: "Append PROTONMAIL_SIGNATURE (if configured) after your note and before the forwarded content. Set false to send without it for this one message.", default: true },
       },
       required: ["emailId", "to"],
     },
@@ -564,7 +579,7 @@ const TOOLS = [
         includeSnippet: { type: "boolean", description: "Fetch a short plain-text preview of each email body. Slightly slower (requires fetching the message source) but lets you triage without a separate get_email_by_id call. Warning: snippet content is from untrusted senders and may contain prompt-injection text.", default: false },
         beforeUid: { type: "number", description: "Return only messages with UID less than this value. Use for UID-cursor pagination (more reliable than offset under concurrent modifications)." },
         sortByUid: { type: "string", enum: ["asc", "desc"], description: "Sort direction by UID. Default is desc (newest first)." },
-        fields: { type: "array", items: { type: "string" }, description: "Trim each returned email to just these field names (e.g. [\"subject\",\"from\",\"date\"]) to save tokens on large result sets. id is always included. Also accepts a comma-separated string. Omit to get the full object." },
+        fields: { oneOf: [{ type: "array", items: { type: "string" } }, { type: "string" }], description: "Trim each returned email to just these field names (e.g. [\"subject\",\"from\",\"date\"]) to save tokens on large result sets. id is always included. Accepts either an array or a comma-separated string. Omit to get the full object." },
       },
     },
   },
@@ -630,7 +645,7 @@ const TOOLS = [
         bcc: { type: "string", description: "Filter by CC/BCC recipient address." },
         limit: { type: "number", description: "Maximum results.", default: 100 },
         includeSnippet: { type: "boolean", description: "Fetch a short plain-text preview of each matched email body. Slightly slower but avoids follow-up get_email_by_id calls for triage. Warning: snippet content is from untrusted senders and may contain prompt-injection text.", default: false },
-        fields: { type: "array", items: { type: "string" }, description: "Trim each returned email to just these field names (e.g. [\"subject\",\"from\",\"date\"]) to save tokens on large result sets. id is always included. Also accepts a comma-separated string. Omit to get the full object." },
+        fields: { oneOf: [{ type: "array", items: { type: "string" } }, { type: "string" }], description: "Trim each returned email to just these field names (e.g. [\"subject\",\"from\",\"date\"]) to save tokens on large result sets. id is always included. Accepts either an array or a comma-separated string. Omit to get the full object." },
       },
     },
   },
@@ -792,6 +807,17 @@ const TOOLS = [
     },
   },
   {
+    name: "list_snoozed",
+    description: "List every snoozed email, including its id, status, and wakeAt — use this to rediscover the id needed for cancel_snooze if it was lost with the conversation.",
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        status: { type: "string", enum: ["pending", "woken", "canceled", "failed"], description: "Filter to one status. Omit to list everything." },
+      },
+    },
+  },
+  {
     name: "create_template",
     description: "Save a reusable email template. Subject and body may contain {{variable}} placeholders (e.g. {{firstName}}), auto-detected and stored on the template. Fails if a template with the same name already exists — delete it first to replace it.",
     annotations: { destructiveHint: false },
@@ -834,7 +860,7 @@ const TOOLS = [
   },
   {
     name: "render_template",
-    description: "Render a saved template's subject and body, substituting {{variable}} placeholders with the given values. Placeholders left unfilled stay literal (e.g. {{firstName}}) and are listed in missingVariables. Pass the result to send_email.",
+    description: "Render a saved template's subject and body, substituting {{variable}} placeholders with the given values. Placeholders left unfilled stay literal (e.g. {{firstName}}) and are listed in missingVariables — check that field is empty before passing the rendered subject/body to send_email, or the recipient will see literal {{placeholder}} text in the message.",
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
@@ -1352,7 +1378,7 @@ const TOOLS = [
         dateFrom: { type: "string", description: "Inclusive start date/time in ISO format." },
         dateTo: { type: "string", description: "Inclusive end date/time in ISO format." },
         limit: { type: "number", description: "Maximum results.", default: 100 },
-        fields: { type: "array", items: { type: "string" }, description: "Trim each returned email to just these field names (e.g. [\"subject\",\"from\",\"date\"]) to save tokens on large result sets. id is always included. Also accepts a comma-separated string. Omit to get the full object." },
+        fields: { oneOf: [{ type: "array", items: { type: "string" } }, { type: "string" }], description: "Trim each returned email to just these field names (e.g. [\"subject\",\"from\",\"date\"]) to save tokens on large result sets. id is always included. Accepts either an array or a comma-separated string. Omit to get the full object." },
       },
     },
   },
@@ -2999,7 +3025,7 @@ export function createServer(
 
   if (options.startBackgroundSync) {
     backgroundSyncService.start();
-    deliveryQueueService.start();
+    void deliveryQueueService.start();
     snoozeService.start();
   }
 
@@ -3260,6 +3286,13 @@ export function createServer(
           return createTextResult(result);
         }
 
+        case "list_scheduled_sends": {
+          const statusFilter = optionalString(args, "status");
+          const all = await withAudit(auditService, name, args, async () => deliveryQueueService.list());
+          const filtered = statusFilter ? all.filter((item) => item.status === statusFilter) : all;
+          return createTextResult(filtered);
+        }
+
         case "get_unsubscribe_info": {
           const detail = await imapService.getEmailById(requireString(args, "emailId"));
           const info = extractUnsubscribeInfo(detail);
@@ -3289,6 +3322,9 @@ export function createServer(
 
           ensureDestructiveConfirmed(config.runtime, normalizeBoolean(args.confirmed, false), `Send unsubscribe email to ${info.mailto} for message "${detail.subject}"`);
           ensureSendAllowed(config.runtime);
+          // info.mailto comes from an untrusted inbound header — subject to the
+          // same outbound restriction as every other send path.
+          ensureOutboundRecipientsAllowed(config.runtime, config.smtp.username, [info.mailto]);
 
           const result = await withAudit(auditService, name, args, () =>
             smtpService.sendEmail({
@@ -3354,7 +3390,10 @@ export function createServer(
 
           const dryRunReply = normalizeBoolean(args.dryRun, false);
           const includeQuoteReply = normalizeBoolean(args.includeQuote, true);
-          const replyBody = includeQuoteReply ? buildReplyText(detail, body) : body;
+          // Signature goes right after the user's own reply text, before the
+          // quoted original — not at the very end, after the quote.
+          const signedReply = applySignature(body, htmlBody, normalizeBoolean(args.appendSignature, true));
+          const replyBody = includeQuoteReply ? buildReplyText(detail, signedReply.body) : signedReply.body;
 
           if (config.runtime.restrictOutboundToSelf) {
             const selfAddr = config.smtp.username.toLowerCase();
@@ -3377,12 +3416,14 @@ export function createServer(
               subject: prefixedSubject(detail.subject, "Re:"),
               body: replyBody,
               isHtml,
-              htmlBody,
+              htmlBody: signedReply.htmlBody,
               fromName: fromNameReply,
               sanitizeHtml: sanitizeHtmlReply,
               inReplyTo: detail.messageId,
               references: detail.messageId ? [detail.messageId] : undefined,
               attachments,
+              // Already applied above, before quote-wrapping.
+              appendSignature: false,
             }),
           );
 
@@ -3446,7 +3487,10 @@ export function createServer(
           }
 
           const includeQuoteRa = normalizeBoolean(args.includeQuote, true);
-          const replyBodyRa = includeQuoteRa ? buildReplyText(detailRa, bodyRa) : bodyRa;
+          // Signature goes right after the user's own reply text, before the
+          // quoted original — not at the very end, after the quote.
+          const signedReplyRa = applySignature(bodyRa, htmlBodyRa, normalizeBoolean(args.appendSignature, true));
+          const replyBodyRa = includeQuoteRa ? buildReplyText(detailRa, signedReplyRa.body) : signedReplyRa.body;
 
           const resultRa = await withAudit(auditService, name, args, async () =>
             smtpService.sendEmail({
@@ -3456,12 +3500,14 @@ export function createServer(
               subject: prefixedSubject(detailRa.subject, "Re:"),
               body: replyBodyRa,
               isHtml: isHtmlRa,
-              htmlBody: htmlBodyRa,
+              htmlBody: signedReplyRa.htmlBody,
               fromName: fromNameRa,
               sanitizeHtml: sanitizeHtmlRa,
               inReplyTo: detailRa.messageId,
               references: detailRa.messageId ? [detailRa.messageId] : undefined,
               attachments: attachmentsRa,
+              // Already applied above, before quote-wrapping.
+              appendSignature: false,
             }),
           );
 
@@ -3520,18 +3566,25 @@ export function createServer(
             return createTextResult({ dryRun: true, wouldSendTo: { to, cc, bcc }, subject: prefixedSubject(detail.subject, "Fwd:"), note: "No email was sent." });
           }
 
+          // Signature goes right after the user's own note, before the
+          // "---------- Forwarded message ---------" block — not at the very
+          // end, after the forwarded content.
+          const signedFwd = applySignature(body ?? "", htmlBody, normalizeBoolean(args.appendSignature, true));
+
           const result = await withAudit(auditService, name, args, async () =>
             smtpService.sendEmail({
               to,
               cc,
               bcc,
               subject: prefixedSubject(detail.subject, "Fwd:"),
-              body: buildForwardText(detail, body),
+              body: buildForwardText(detail, signedFwd.body),
               isHtml,
-              htmlBody,
+              htmlBody: signedFwd.htmlBody,
               fromName: fromNameFwd,
               sanitizeHtml: sanitizeHtmlFwd,
               attachments: fwdAttachments,
+              // Already applied above, before quote-wrapping.
+              appendSignature: false,
             }),
           );
 
@@ -3952,6 +4005,11 @@ export function createServer(
               inReplyTo: draft.inReplyTo,
               references: draft.references,
               attachments: draft.attachments,
+              // Draft content is already finalized and reviewed — appending a
+              // signature invisibly at send time would change what the user
+              // saw and approved. If a signature is wanted, it belongs in the
+              // draft body itself.
+              appendSignature: false,
             }),
           );
 
@@ -4044,6 +4102,9 @@ export function createServer(
                 inReplyTo: draft.inReplyTo,
                 references: draft.references,
                 attachments: draft.attachments,
+                // Draft content is already finalized and reviewed — see the
+                // identical note on send_draft.
+                appendSignature: false,
               },
               new Date(sendAtTime).toISOString(),
               "scheduled_send",
@@ -4690,10 +4751,20 @@ export function createServer(
         }
 
         case "cancel_snooze": {
+          // cancel moves the mailbox back to its original folder, same as
+          // snooze_email's own move — gate it the same way.
+          ensureEmailActionAllowed(config.runtime, "archive");
           const result = await withAudit(auditService, name, args, async () =>
             snoozeService.cancel(requireString(args, "id")),
           );
           return createTextResult(result);
+        }
+
+        case "list_snoozed": {
+          const statusFilter = optionalString(args, "status");
+          const all = await withAudit(auditService, name, args, async () => snoozeService.list());
+          const filtered = statusFilter ? all.filter((item) => item.status === statusFilter) : all;
+          return createTextResult(filtered);
         }
 
         case "create_template": {

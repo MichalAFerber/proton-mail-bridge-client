@@ -80,6 +80,23 @@ export function ensureMailboxWriteAllowed(runtime: ProtonRuntimeConfig): void {
   }
 }
 
+// Shared by every outbound-send path (send_email, reply/reply-all/forward,
+// unsubscribe_sender, and the delivery queue's fire-time re-check) so
+// RESTRICT_OUTBOUND_TO_SELF can't be bypassed by adding a new send path and
+// forgetting the inline check.
+export function ensureOutboundRecipientsAllowed(
+  runtime: ProtonRuntimeConfig,
+  selfAddress: string,
+  recipients: string[],
+): void {
+  if (!runtime.restrictOutboundToSelf) return;
+  const self = selfAddress.toLowerCase();
+  const external = recipients.filter((r) => r.toLowerCase() !== self);
+  if (external.length > 0) {
+    throw new Error(`RESTRICT_OUTBOUND_TO_SELF is enabled. Cannot send to: ${external.join(", ")}`);
+  }
+}
+
 export function ensureDestructiveConfirmed(
   runtime: ProtonRuntimeConfig,
   confirmed: boolean | undefined,

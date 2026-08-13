@@ -976,7 +976,14 @@ async function runSend(parsed: ParsedCliArgs): Promise<void> {
         confirmed: isTruthyFlag(parsed.flags.confirmed) || undefined,
       },
     });
-    printToolCallResult(result as Record<string, unknown>, wantJson);
+    const parsedResult = result as Record<string, unknown>;
+    printToolCallResult(parsedResult, wantJson);
+    const structured = (parsedResult.structuredContent ?? {}) as Record<string, unknown>;
+    if (structured.queued && !wantJson) {
+      process.stderr.write(
+        "Note: this queued send only fires while an MCP server (e.g. Claude Desktop) is running against the same data directory — this CLI process exits immediately after queuing, so it will NOT deliver on its own.\n",
+      );
+    }
   });
 }
 
@@ -1678,14 +1685,19 @@ interface ToolOnlyCommand {
   tool: string;
   positionals: string[];
   help: string;
+  // When set, this field is read from --file <path> instead of a shell
+  // positional (for content too large/unwieldy to pass as an argv token,
+  // e.g. a full .eml source). Not included in `positionals`.
+  fileField?: string;
 }
 
 export const TOOL_ONLY_COMMANDS: ToolOnlyCommand[] = [
   { command: "cancel-send", tool: "cancel_send", positionals: ["id"], help: "Cancel a send queued by PROTONMAIL_SEND_DELAY_SECONDS" },
+  { command: "list-scheduled-sends", tool: "list_scheduled_sends", positionals: [], help: "List queued/scheduled sends (rediscover an id for cancel-send)" },
   { command: "unsubscribe-info", tool: "get_unsubscribe_info", positionals: ["emailId"], help: "Read List-Unsubscribe details for a message" },
   { command: "unsubscribe-sender", tool: "unsubscribe_sender", positionals: ["emailId"], help: "Execute a mailto unsubscribe (--args '{\"confirmed\":true}' if required)" },
   { command: "reply-to-email", tool: "reply_to_email", positionals: ["emailId", "body"], help: "Immediately send a reply (full tool: attachments/dryRun via --args)" },
-  { command: "reply-all-email", tool: "reply_all_email", positionals: ["emailId"], help: "Immediately reply to all recipients (--args '{\"body\":...}')" },
+  { command: "reply-all-email", tool: "reply_all_email", positionals: ["emailId", "body"], help: "Immediately reply to all recipients" },
   { command: "forward-email", tool: "forward_email", positionals: ["emailId", "to"], help: "Immediately forward a message, preserving attachments" },
   { command: "list-drafts", tool: "list_drafts", positionals: [], help: "List local drafts (tool form; see also `drafts`)" },
   { command: "schedule-draft", tool: "schedule_draft", positionals: ["draftId", "sendAt"], help: "Queue a saved draft to send at a future time" },
@@ -1702,6 +1714,7 @@ export const TOOL_ONLY_COMMANDS: ToolOnlyCommand[] = [
   { command: "restore-email", tool: "restore_email", positionals: ["emailId"], help: "Restore from Trash (tool form; see also `restore`)" },
   { command: "snooze-email", tool: "snooze_email", positionals: ["emailId", "wakeAt"], help: "Snooze a message until wakeAt (ISO timestamp)" },
   { command: "cancel-snooze", tool: "cancel_snooze", positionals: ["id"], help: "Wake a snoozed email immediately" },
+  { command: "list-snoozed", tool: "list_snoozed", positionals: [], help: "List snoozed emails (rediscover an id for cancel-snooze)" },
   { command: "create-template", tool: "create_template", positionals: ["name", "subject", "body"], help: "Save a reusable email template" },
   { command: "list-templates", tool: "list_templates", positionals: [], help: "List saved email templates" },
   { command: "get-template", tool: "get_template", positionals: ["id"], help: "Get a saved template by id" },
@@ -1737,7 +1750,7 @@ export const TOOL_ONLY_COMMANDS: ToolOnlyCommand[] = [
   { command: "save-attachments", tool: "save_attachments", positionals: ["emailId"], help: "Save all attachments from an email to disk" },
   { command: "save-attachment", tool: "save_attachment", positionals: ["emailId", "attachmentId"], help: "Save one attachment to disk" },
   { command: "export-email", tool: "export_email", positionals: ["emailId"], help: "Save raw .eml source to disk" },
-  { command: "import-email", tool: "import_email", positionals: ["raw"], help: "Import a raw .eml message via IMAP APPEND" },
+  { command: "import-email", tool: "import_email", positionals: [], fileField: "raw", help: "Import a .eml message via IMAP APPEND (--file <path.eml>)" },
   { command: "clear-index", tool: "clear_index", positionals: [], help: "Delete the local SQLite mailbox index" },
   { command: "get-audit-logs", tool: "get_audit_logs", positionals: [], help: "Recent write-operation audit log entries" },
 ];
@@ -1752,7 +1765,19 @@ async function runToolOnlyCommand(entry: ToolOnlyCommand, parsed: ParsedCliArgs)
     }
     args[field] = value;
   });
+
+  if (entry.fileField) {
+    const filePath = getStringFlag(parsed.flags, "file");
+    if (filePath) {
+      args[entry.fileField] = await readFile(filePath, "utf8");
+    }
+  }
+
   Object.assign(args, (await parseToolArgs(parsed)) ?? {});
+
+  if (entry.fileField && args[entry.fileField] === undefined) {
+    throw new Error(`${entry.command} requires --file <path>, or ${entry.fileField} via --args.`);
+  }
 
   await withMcpClient(async (client) => {
     const result = await client.callTool({ name: entry.tool, arguments: args });

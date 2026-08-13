@@ -149,3 +149,49 @@ test("a snooze service reopened against the same dataDir sees items persisted by
     assert.equal(after.status, "woken");
   });
 });
+
+test("checkDue stops retrying a permanently-failing wake and marks it terminally failed", async () => {
+  await withTempDir(async (dataDir) => {
+    // moveEmail always throws — simulates the snoozed email having been
+    // moved or deleted before wakeAt, so the wake can never succeed.
+    const imap = {
+      async createFolder() { return { path: "Folders/Snoozed", created: true }; },
+      async moveEmail() { throw new Error("message not found"); },
+    };
+    const service = new SnoozeService(createConfig(dataDir), imap);
+
+    // snooze() itself calls moveEmail (to move it INTO Folders/Snoozed), so
+    // build the record directly on disk instead, already in the snoozed
+    // location, to isolate the wake-retry behavior from the snooze-out call.
+    const record = {
+      id: "retry-test-1",
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+      wakeAt: new Date(Date.now() - 1_000).toISOString(),
+      status: "pending",
+      originalFolder: "INBOX",
+      currentEmailId: "Folders/Snoozed::999",
+    };
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(
+      join(dataDir, "snoozed.json"),
+      JSON.stringify({ version: 1, items: { [record.id]: record } }, null, 2),
+      "utf8",
+    );
+
+    // Retry 5 times (MAX_WAKE_FAILURES) — each checkDue call is one attempt.
+    for (let i = 0; i < 5; i += 1) {
+      await service.checkDue();
+    }
+
+    const after = await service.get(record.id);
+    assert.equal(after.status, "failed", "must stop retrying after the failure cap and go terminal");
+    assert.equal(after.failureCount, 5);
+
+    // One more pass must not attempt another wake — status stays "failed".
+    const result = await service.checkDue();
+    assert.equal(result.woken, 0);
+    assert.equal(result.failed, 0, "a terminally-failed item is no longer 'due' for retry");
+  });
+});

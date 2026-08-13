@@ -18,6 +18,31 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// PROTONMAIL_SIGNATURE is plain text; appended to both the text body and,
+// for HTML mail, as a <br><br> separated block escaped into the markup
+// (kept simple — not itself HTML, so no separate sanitization concern).
+//
+// Exported so callers that wrap the user's own text in something else (a
+// reply's quoted original, a forward's "---------- Forwarded message
+// ---------" block) can apply the signature to their own text BEFORE
+// wrapping it, instead of buildMailOptions appending it to the very end —
+// after the quote — which reads as if it were part of the quoted material.
+export function applySignature(
+  body: string,
+  htmlBody: string | undefined,
+  appendSignature: boolean | undefined,
+): { body: string; htmlBody: string | undefined } {
+  const signature = process.env.PROTONMAIL_SIGNATURE?.trim();
+  const shouldAppend = appendSignature !== false && Boolean(signature);
+  if (!shouldAppend) {
+    return { body, htmlBody };
+  }
+  return {
+    body: `${body}\n\n${signature}`,
+    htmlBody: htmlBody ? `${htmlBody}<br><br>${escapeHtml(signature as string).replace(/\n/g, "<br>")}` : htmlBody,
+  };
+}
+
 export class SMTPService {
   private transporter?: Transporter;
 
@@ -183,15 +208,7 @@ export class SMTPService {
       ? this.sanitizeHtmlContent(htmlContent)
       : htmlContent;
 
-    // PROTONMAIL_SIGNATURE is plain text; appended to both the text body and,
-    // for HTML mail, as a <br><br> separated block escaped into the markup
-    // (kept simple — not itself HTML, so no separate sanitization concern).
-    const signature = process.env.PROTONMAIL_SIGNATURE?.trim();
-    const appendSignature = input.appendSignature !== false && Boolean(signature);
-    const finalBody = appendSignature ? `${input.body}\n\n${signature}` : input.body;
-    const finalHtml = appendSignature && sanitizedHtml
-      ? `${sanitizedHtml}<br><br>${escapeHtml(signature as string).replace(/\n/g, "<br>")}`
-      : sanitizedHtml;
+    const { body: finalBody, htmlBody: finalHtml } = applySignature(input.body, sanitizedHtml, input.appendSignature);
 
     return {
       from,

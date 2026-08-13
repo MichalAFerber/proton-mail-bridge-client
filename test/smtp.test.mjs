@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeHeader, SMTPService } from "../dist/services/smtp-service.js";
+import { applySignature, sanitizeHeader, SMTPService } from "../dist/services/smtp-service.js";
 
 test("sanitizeHeader replaces CR and LF with spaces", () => {
   assert.equal(sanitizeHeader("hello\r\nBcc: evil"), "hello  Bcc: evil");
@@ -194,6 +194,44 @@ test("buildRawMessage sends no signature block when PROTONMAIL_SIGNATURE is unse
     const message = raw.toString("utf8");
     assert.ok(message.includes("hello there"));
     assert.ok(!message.includes("Best,"));
+  } finally {
+    if (previous === undefined) delete process.env.PROTONMAIL_SIGNATURE;
+    else process.env.PROTONMAIL_SIGNATURE = previous;
+  }
+});
+
+// applySignature is what reply_to_email/reply_all_email/forward_email call
+// directly on their own text BEFORE quote/forward-wrapping, so the signature
+// lands after the user's own words and before the quoted/forwarded content
+// instead of at the very end of the whole message (the bug found in review).
+test("applySignature appends after the given text, not conditioned on any wrapping the caller does later", () => {
+  const previous = process.env.PROTONMAIL_SIGNATURE;
+  process.env.PROTONMAIL_SIGNATURE = "Best,\nOwner";
+  try {
+    const result = applySignature("Sounds good!", "<p>Sounds good!</p>", true);
+    assert.equal(result.body, "Sounds good!\n\nBest,\nOwner");
+    assert.equal(result.htmlBody, "<p>Sounds good!</p><br><br>Best,<br>Owner");
+
+    // Simulates the reply flow: quote-wrap AFTER signing, so the signature
+    // ends up between the reply text and the quote, not after the quote.
+    const quoted = `${result.body}\n\nOn Jan 1, sender wrote:\n> original text`;
+    const signatureIndex = quoted.indexOf("Best,");
+    const quoteIndex = quoted.indexOf("On Jan 1");
+    assert.ok(signatureIndex < quoteIndex, "signature must appear before the quoted original");
+  } finally {
+    if (previous === undefined) delete process.env.PROTONMAIL_SIGNATURE;
+    else process.env.PROTONMAIL_SIGNATURE = previous;
+  }
+});
+
+test("applySignature is a no-op when appendSignature is false or no signature is configured", () => {
+  const previous = process.env.PROTONMAIL_SIGNATURE;
+  try {
+    process.env.PROTONMAIL_SIGNATURE = "Best,\nOwner";
+    assert.deepEqual(applySignature("hi", undefined, false), { body: "hi", htmlBody: undefined });
+
+    delete process.env.PROTONMAIL_SIGNATURE;
+    assert.deepEqual(applySignature("hi", undefined, true), { body: "hi", htmlBody: undefined });
   } finally {
     if (previous === undefined) delete process.env.PROTONMAIL_SIGNATURE;
     else process.env.PROTONMAIL_SIGNATURE = previous;

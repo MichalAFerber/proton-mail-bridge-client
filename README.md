@@ -24,12 +24,12 @@
 
 ---
 
-Give Claude Desktop (or Cline, or any MCP client) full access to your Proton Mail inbox: read, search, send, draft, triage threads, manage folders, save attachments, and more — 78 MCP tools in total. Most of the same capabilities are also available as a full CLI for scripting, cron, and piped automation — no Claude required.
+Give Claude Desktop (or Cline, or any MCP client) full access to your Proton Mail inbox: read, search, send, draft, triage threads, manage folders, save attachments, and more — 95 MCP tools in total. Most of the same capabilities are also available as a full CLI for scripting, cron, and piped automation — no Claude required.
 
 ## What you get
 
 - **Claude reads and manages your Proton Mail** — triage, reply, draft, archive, search, move, batch-act on threads, pull attachments
-- **Full CLI** — 73 commands covering nearly all of the same capabilities, scriptable and pipeable, works in cron and shell scripts
+- **Full CLI** — a dedicated command for every one of the 95 tools (plus a generic `tool <name>` passthrough), scriptable and pipeable, works in cron and shell scripts
 - **Fast local search** — full-text search across your inbox without hitting IMAP on every query
 - **Safety controls** — read-only mode, send gate, destructive-action confirmation, per-action allowlist
 - **Privacy-native** — no third-party email service involved; your mail stays on your machine
@@ -315,7 +315,7 @@ proton-mail-bridge-client notify &                                  # background
 
 All commands support `--json` for machine-readable output, and any MCP tool is directly callable via `proton-mail-bridge-client tool <name> --args '{...}'`.
 
-**Full command reference: [docs/cli.md](docs/cli.md)** (73 commands across read, triage, compose, mailbox actions, folders, drafts, analytics, and diagnostics).
+**Full command reference: [docs/cli.md](docs/cli.md)** (a named command for every one of the 95 tools, across read, triage, compose, mailbox actions, folders, drafts, templates, analytics, and diagnostics).
 
 ---
 
@@ -324,7 +324,7 @@ All commands support `--json` for machine-readable output, and any MCP tool is d
 All flags work in both the MCP server and CLI:
 
 ```bash
-PROTONMAIL_TOOL_TIER=core            # expose 20 core tools instead of all 76 — saves context window
+PROTONMAIL_TOOL_TIER=core            # expose 20 core tools instead of all 95 — saves context window
 PROTONMAIL_READ_ONLY=true            # disable all write operations
 PROTONMAIL_ALLOW_SEND=false          # disable SMTP sends only (other writes still work)
 PROTONMAIL_CONFIRM_DESTRUCTIVE=true  # require confirmed:true on send, reply, forward, delete
@@ -357,7 +357,7 @@ PROTONMAIL_PASSWORD_COMMAND='pass proton/password'
 PROTONMAIL_DATA_DIR="$HOME/.proton-mail-bridge-client"
 
 # Tools
-PROTONMAIL_TOOL_TIER='full'          # 'core' exposes 20 essential tools (saves context window); 'full' exposes all 93
+PROTONMAIL_TOOL_TIER='full'          # 'core' exposes 20 essential tools (saves context window); 'full' exposes all 95
 
 # Safety
 PROTONMAIL_READ_ONLY='false'
@@ -366,7 +366,7 @@ PROTONMAIL_ALLOW_REMOTE_DRAFT_SYNC='true'
 PROTONMAIL_ALLOWED_ACTIONS='mark_read,mark_unread,star,unstar,archive,trash,restore'
 PROTONMAIL_CONFIRM_DESTRUCTIVE='false'
 PROTONMAIL_SEND_DELAY_SECONDS='0'    # >0: send_email queues instead of sending immediately, cancelable via cancel_send. Only fires while this server stays running.
-PROTONMAIL_SIGNATURE=''              # Plain text, appended to send_email bodies (text + HTML). Opt out per-message with appendSignature: false.
+PROTONMAIL_SIGNATURE=''              # Plain text, appended to send_email/reply_to_email/reply_all_email/forward_email bodies (text + HTML), after your own text and before any quoted/forwarded content. Opt out per-message with appendSignature: false. Never applied to send_draft/schedule_draft — draft content is already finalized.
 
 # Sync
 PROTONMAIL_AUTO_SYNC='true'
@@ -419,6 +419,18 @@ PROTONMAIL_IDLE_MAX_SECONDS='30'
 
 ### Diagnostics
 `get_connection_status` · `get_runtime_status` · `run_doctor` · `get_audit_logs` · `run_background_sync` · `wait_for_mailbox_changes` · `sync_emails` · `get_index_status` · `clear_cache` · `clear_index` · `get_logs`
+
+### Unsubscribe & trust
+`get_unsubscribe_info` · `unsubscribe_sender` — `get_email_by_id` also returns a `security` block (DKIM/SPF/DMARC, encryption, spam score)
+
+### Undo-send, scheduling & snooze
+`cancel_send` · `list_scheduled_sends` · `schedule_draft` · `snooze_email` · `cancel_snooze` · `list_snoozed` — send_email queues instead of sending immediately when `PROTONMAIL_SEND_DELAY_SECONDS` is set; all three only fire while this server process stays running, see [Operational notes](#operational-notes)
+
+### Templates
+`create_template` · `list_templates` · `get_template` · `delete_template` · `render_template` — `{{variable}}` substitution, render then pass the result to `send_email`
+
+### Import/export & attachments
+`export_email` · `import_email` · `get_attachment_text` · `get_emails_by_ids`
 
 ---
 

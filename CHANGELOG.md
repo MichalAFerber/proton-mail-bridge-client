@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here.
 
+## [1.17.1] — 2026-08-13
+
+Correctness/security fixes to the v1.17.0 delivery queue and outbound-send paths, found by a post-ship multi-agent review and each independently verified against the code before fixing.
+
+### Fixed
+- **Undo-send race**: `checkDue()` could send an email after `cancel_send` had already reported `canceled: true`, and an overlapping catch-up/timer pass or a crash mid-send could send the same item twice. Items are now atomically claimed (`pending` → `sending`) under the same lock used to read them, so a cancel or a second pass can no longer act on an item already in flight
+- **Runtime policy bypass at fire time**: a queued send only checked `allowSend`/`readOnly`/`restrictOutboundToSelf` when it was enqueued, not when it actually fired — so relaunching the server in read-only mode still sent every past-due queued item on startup. Policy is now re-checked immediately before each send
+- **Cross-process cache blindness**: `DeliveryQueueService`/`SnoozeService`/`TemplateService` cached their JSON store in memory forever, so a CLI command (`cancel-send`, `schedule-draft`, `cancel-snooze`, …) running in a separate process was invisible to a long-running MCP server sharing the same data directory, and its write could be silently overwritten by the server's next save. All three now always read from disk
+- **`unsubscribe_sender` bypassed `PROTONMAIL_RESTRICT_OUTBOUND_TO_SELF`** — the one send path whose recipient comes from an untrusted inbound header was the only one not enforcing it
+- **Signature placement and scope**: `PROTONMAIL_SIGNATURE` was appended after the entire message body, landing below the quoted original on a reply instead of after your own reply text. It also silently applied to `send_draft`/`schedule_draft`, mutating already-reviewed draft content at send time with no way to opt out. Now applied to the user's own text before quote/forward-wrapping (`reply_to_email`, `reply_all_email`, `forward_email` gain an `appendSignature` field, defaulting true), and never auto-applied to drafts
+- **Snooze retried forever**: a wake that could never succeed (e.g. the email was moved or deleted before `wakeAt`) retried every 15s indefinitely. Capped at 5 consecutive failures, after which the snooze goes to a terminal `failed` status
+- `cancel_snooze` now enforces the same policy gate as `snooze_email` (both move mail)
+- CLI: `import-email` no longer requires the full `.eml` source as a shell argument — use `--file <path>`; `reply-all-email` no longer silently drops a positionally-passed body; `send` under `PROTONMAIL_SEND_DELAY_SECONDS` now warns that the CLI process exiting means the queued item needs a separately-running MCP server to actually fire
+- `fields` parameter schema (on `get_emails`/`search_emails`/`search_indexed_emails`) now correctly declares it accepts either an array or a comma-separated string, matching what the handler already did
+
+### Added
+- `list_scheduled_sends` and `list_snoozed` tools — `cancel_send`/`cancel_snooze` require an id that's easy to lose with the conversation; these let you rediscover it
+
 ## [1.17.0] — 2026-08-12
 
 Wave C: differentiator features, all shipped with real regression tests.

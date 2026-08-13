@@ -13,6 +13,10 @@ import { SimpleIMAPService } from "./simple-imap-service.js";
 // while this server stays running — see DeliveryQueueService's doc comment.
 const SNOOZE_FOLDER = "Folders/Snoozed";
 const CHECK_INTERVAL_MS = 15_000;
+// After this many consecutive failed wake attempts (e.g. the email was moved
+// or deleted before wakeAt so moveEmail can no longer find it), stop retrying
+// every 15s forever and mark the snooze terminally "failed" instead.
+const MAX_WAKE_FAILURES = 5;
 
 interface SnoozeFile {
   version: number;
@@ -26,7 +30,6 @@ function createEmptyStore(): SnoozeFile {
 export class SnoozeService {
   private readonly storePath: string;
   private _lock: Promise<void> = Promise.resolve();
-  private loadedStore?: SnoozeFile;
   private timer?: NodeJS.Timeout;
   private started = false;
 
@@ -143,6 +146,13 @@ export class SnoozeService {
           const record = store.items[item.id];
           if (record && record.status === "pending") {
             record.failureReason = error instanceof Error ? error.message : String(error);
+            record.failureCount = (record.failureCount ?? 0) + 1;
+            // Cap retries — e.g. the email was moved or deleted before
+            // wakeAt, so moveEmail will never succeed. Without this, checkDue
+            // would retry the same doomed wake every 15s forever.
+            if (record.failureCount >= MAX_WAKE_FAILURES) {
+              record.status = "failed";
+            }
             await this.save(store);
           }
         });
@@ -175,23 +185,18 @@ export class SnoozeService {
     return this.withLock(() => this.loadUnlocked());
   }
 
+  // Always reads from disk (no in-memory cache) — see the identical comment
+  // in DeliveryQueueService.loadUnlocked for why.
   private async loadUnlocked(): Promise<SnoozeFile> {
-    if (this.loadedStore) {
-      return this.loadedStore;
-    }
-
     await this.cleanOrphanedTempFiles();
 
     try {
       const raw = await readFile(this.storePath, "utf8");
       const parsed = JSON.parse(raw) as SnoozeFile;
-      this.loadedStore = { ...createEmptyStore(), ...parsed };
-      return this.loadedStore;
+      return { ...createEmptyStore(), ...parsed };
     } catch (error) {
       if (error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "ENOENT") {
-        const empty = createEmptyStore();
-        this.loadedStore = empty;
-        return empty;
+        return createEmptyStore();
       }
 
       const corruptPath = `${this.storePath}.corrupt`;
@@ -202,9 +207,7 @@ export class SnoozeService {
         this.log.error("Failed to back up corrupted snoozed.json — recreating empty store without backup", "SnoozeService", { parseError: error, backupError });
       }
 
-      const empty = createEmptyStore();
-      this.loadedStore = empty;
-      return empty;
+      return createEmptyStore();
     }
   }
 
@@ -228,13 +231,7 @@ export class SnoozeService {
   private async save(store: SnoozeFile): Promise<void> {
     await mkdir(dirname(this.storePath), { recursive: true });
     const tempPath = `${this.storePath}.tmp`;
-    try {
-      await writeFile(tempPath, JSON.stringify(store, null, 2), "utf8");
-      await rename(tempPath, this.storePath);
-    } catch (error) {
-      this.loadedStore = undefined;
-      throw error;
-    }
-    this.loadedStore = store;
+    await writeFile(tempPath, JSON.stringify(store, null, 2), "utf8");
+    await rename(tempPath, this.storePath);
   }
 }

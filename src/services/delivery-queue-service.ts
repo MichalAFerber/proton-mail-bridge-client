@@ -3,6 +3,7 @@ import { copyFileSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { DeliveryQueueKind, DeliveryQueueRecord, ProtonMailConfig, SendEmailInput } from "../types/index.js";
+import { ensureOutboundRecipientsAllowed, ensureSendAllowed } from "../utils/runtime-policy.js";
 import { logger, type Logger } from "../utils/logger.js";
 import { SMTPService } from "./smtp-service.js";
 
@@ -34,7 +35,6 @@ const CHECK_INTERVAL_MS = 15_000;
 export class DeliveryQueueService {
   private readonly queuePath: string;
   private _lock: Promise<void> = Promise.resolve();
-  private loadedStore?: DeliveryQueueFile;
   private timer?: NodeJS.Timeout;
   private started = false;
 
@@ -46,9 +46,13 @@ export class DeliveryQueueService {
     this.queuePath = join(this.config.dataDir, "delivery-queue.json");
   }
 
-  start(): void {
+  async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
+    // A "sending" record left over from a process that died mid-send has an
+    // unknown outcome — resolve those before the catch-up pass can touch
+    // anything, so we never guess and double-send.
+    await this.recoverInterruptedSends();
     // Catch-up pass immediately, then check periodically.
     void this.checkDue();
     this.scheduleNext();
@@ -117,26 +121,50 @@ export class DeliveryQueueService {
     return Object.values(store.items).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
-  // Sends every pending item whose sendAt has passed. Safe to call repeatedly
-  // (each item is only ever sent once, guarded by the status transition
-  // happening inside the same lock as the read).
+  // Sends every pending item whose sendAt has passed. Safe to call repeatedly,
+  // and safe to run concurrently with another checkDue() pass (e.g. an
+  // overlapping catch-up + timer tick) or a cancel(): each item is first
+  // *claimed* — flipped from "pending" to "sending" under the lock — and
+  // only the caller that wins the claim proceeds to send it. cancel() and a
+  // second checkDue() both see "sending" (not "pending") and leave it alone,
+  // so a send already in flight can no longer be reported as canceled while
+  // it actually goes out, and no item can be sent twice.
   async checkDue(): Promise<{ sent: number; failed: number }> {
     const now = Date.now();
-    const due = (await this.list()).filter(
-      (item) => item.status === "pending" && new Date(item.sendAt).getTime() <= now,
-    );
+    const dueIds = (await this.list())
+      .filter((item) => item.status === "pending" && new Date(item.sendAt).getTime() <= now)
+      .map((item) => item.id);
 
     let sent = 0;
     let failed = 0;
-    for (const item of due) {
+    for (const id of dueIds) {
+      const claimed = await this.withLock(async () => {
+        const store = await this.loadUnlocked();
+        const record = store.items[id];
+        if (!record || record.status !== "pending") return undefined;
+        record.status = "sending";
+        await this.save(store);
+        return record;
+      });
+      if (!claimed) continue;
+
       try {
-        const result = await this.smtpService.sendEmail(item.payload);
+        // Runtime policy (allowSend/readOnly/restrictOutboundToSelf) is only
+        // checked at enqueue time by the tool handler — re-check it here too,
+        // since the server may have been restarted under different policy
+        // (e.g. locked to read-only) since the item was queued.
+        ensureSendAllowed(this.config.runtime);
+        ensureOutboundRecipientsAllowed(
+          this.config.runtime,
+          this.config.smtp.username,
+          [...claimed.payload.to, ...(claimed.payload.cc ?? []), ...(claimed.payload.bcc ?? [])],
+        );
+
+        const result = await this.smtpService.sendEmail(claimed.payload);
         await this.withLock(async () => {
           const store = await this.loadUnlocked();
-          const record = store.items[item.id];
-          // Re-check status under the lock — a cancel() could have raced in
-          // between the read above and this send completing.
-          if (record && record.status === "pending") {
+          const record = store.items[id];
+          if (record && record.status === "sending") {
             record.status = "sent";
             record.sentAt = new Date().toISOString();
             record.sentMessageId = result.messageId;
@@ -146,11 +174,11 @@ export class DeliveryQueueService {
         sent += 1;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.log.warn("Delivery queue item failed to send", "DeliveryQueueService", { id: item.id, error });
+        this.log.warn("Delivery queue item failed to send", "DeliveryQueueService", { id, error });
         await this.withLock(async () => {
           const store = await this.loadUnlocked();
-          const record = store.items[item.id];
-          if (record && record.status === "pending") {
+          const record = store.items[id];
+          if (record && record.status === "sending") {
             record.status = "failed";
             record.failureReason = message;
             await this.save(store);
@@ -160,6 +188,25 @@ export class DeliveryQueueService {
       }
     }
     return { sent, failed };
+  }
+
+  // Runs once at start(), before the catch-up checkDue() pass. A record
+  // stuck in "sending" means the previous process died between claiming the
+  // item and recording the outcome — whether the SMTP call actually
+  // completed is unknown, so it is never auto-resent. It is marked "failed"
+  // with a reason that says so explicitly, for the caller to verify by hand.
+  private async recoverInterruptedSends(): Promise<void> {
+    await this.withLock(async () => {
+      const store = await this.loadUnlocked();
+      let changed = false;
+      for (const record of Object.values(store.items)) {
+        if (record.status !== "sending") continue;
+        record.status = "failed";
+        record.failureReason = "Interrupted by a server restart while sending — delivery outcome is unknown. Not auto-resent; check the mailbox's Sent folder to confirm whether it actually went out before resending manually.";
+        changed = true;
+      }
+      if (changed) await this.save(store);
+    });
   }
 
   private async withLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -175,23 +222,21 @@ export class DeliveryQueueService {
     return this.withLock(() => this.loadUnlocked());
   }
 
+  // Always reads from disk (no in-memory cache) so a second process sharing
+  // this dataDir — e.g. a `proton-mail-bridge-client cancel-send` CLI
+  // invocation running alongside a long-lived MCP server — is never invisible
+  // to this instance and never gets its write silently clobbered by a stale
+  // in-memory copy on the next save().
   private async loadUnlocked(): Promise<DeliveryQueueFile> {
-    if (this.loadedStore) {
-      return this.loadedStore;
-    }
-
     await this.cleanOrphanedTempFiles();
 
     try {
       const raw = await readFile(this.queuePath, "utf8");
       const parsed = JSON.parse(raw) as DeliveryQueueFile;
-      this.loadedStore = { ...createEmptyStore(), ...parsed };
-      return this.loadedStore;
+      return { ...createEmptyStore(), ...parsed };
     } catch (error) {
       if (error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "ENOENT") {
-        const empty = createEmptyStore();
-        this.loadedStore = empty;
-        return empty;
+        return createEmptyStore();
       }
 
       const corruptPath = `${this.queuePath}.corrupt`;
@@ -202,9 +247,7 @@ export class DeliveryQueueService {
         this.log.error("Failed to back up corrupted delivery-queue.json — recreating empty store without backup", "DeliveryQueueService", { parseError: error, backupError });
       }
 
-      const empty = createEmptyStore();
-      this.loadedStore = empty;
-      return empty;
+      return createEmptyStore();
     }
   }
 
@@ -228,13 +271,7 @@ export class DeliveryQueueService {
   private async save(store: DeliveryQueueFile): Promise<void> {
     await mkdir(dirname(this.queuePath), { recursive: true });
     const tempPath = `${this.queuePath}.tmp`;
-    try {
-      await writeFile(tempPath, JSON.stringify(store, null, 2), "utf8");
-      await rename(tempPath, this.queuePath);
-    } catch (error) {
-      this.loadedStore = undefined;
-      throw error;
-    }
-    this.loadedStore = store;
+    await writeFile(tempPath, JSON.stringify(store, null, 2), "utf8");
+    await rename(tempPath, this.queuePath);
   }
 }
