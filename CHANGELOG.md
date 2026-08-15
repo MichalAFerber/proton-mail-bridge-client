@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Fixed
+- `PROTONMAIL_TOOL_TIER=core` no longer exposes both `search_emails` and `search_indexed_emails` — the tier exists to reduce tool-selection overlap for weaker models, and had the exact overlap it was meant to avoid. Only `search_indexed_emails` (faster, offline-capable, already the "prefer" default) remains in core; `search_emails` is still available under the full tier. Flagged by Glama's tool-overlap review.
+
 ## [1.17.1] — 2026-08-13
 
 Correctness/security fixes to the v1.17.0 delivery queue and outbound-send paths, found by a post-ship multi-agent review and each independently verified against the code before fixing.

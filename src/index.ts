@@ -1738,10 +1738,14 @@ const TOOLS = [
 // Core tier: the 20 tools that cover ~80% of daily email use.
 // Set PROTONMAIL_TOOL_TIER=core to expose only these — reduces context-window burn
 // significantly on every session. Default is "full" (all tools).
-const CORE_TOOL_NAMES = new Set([
+export const CORE_TOOL_NAMES = new Set([
   "get_emails",
   "get_email_by_id",
-  "search_emails",
+  // search_emails (live IMAP) is deliberately excluded from core — it
+  // overlaps with search_indexed_emails (faster, offline-capable, and
+  // already the "prefer" default per its own description) and the core
+  // tier exists specifically to reduce tool-selection overlap. Still
+  // available under PROTONMAIL_TOOL_TIER=full for stale-index/live-only cases.
   "search_indexed_emails",
   "send_email",
   "reply_to_email",
