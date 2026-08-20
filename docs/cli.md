@@ -103,6 +103,13 @@ proton-mail-bridge-client test-email you@example.com
 proton-mail-bridge-client doctor
 proton-mail-bridge-client status
 proton-mail-bridge-client sync --folder INBOX --limit 150
+
+# --full also detects and prunes messages no longer in this folder (moved,
+# archived, trashed, or deleted by any client) — the default incremental sync
+# only ever adds/updates messages, so a trashed email can keep showing up in
+# search/digest/thread results indefinitely without this. Sync each folder
+# you want cleaned up.
+proton-mail-bridge-client sync --folder INBOX --full
 ```
 
 ## Ambient notifications

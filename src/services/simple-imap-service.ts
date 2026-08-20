@@ -80,6 +80,10 @@ const MAX_ATTACHMENT_TEXT_BYTES = 512_000;
 // engaged (e.g. imapflow's `idling` flag stuck true after Proton Bridge ended
 // the session server-side) and we must recover instead of busy-spinning.
 const MIN_HEALTHY_IDLE_MS = 500;
+// Grace period past timeoutMs before waitForMailboxChanges' own hard timeout
+// fires — see the comment at its Promise.race for why a caller-side timeout
+// can't rely on imapflow's graceful preCheck break alone.
+const HARD_IDLE_TIMEOUT_GRACE_MS = 5_000;
 const UID_VALIDITY_MISMATCH_ERROR = "UID validity mismatch - local index is stale, run sync_emails to refresh";
 
 function collectErrorText(error: unknown): string {
@@ -543,10 +547,15 @@ export class SimpleIMAPService {
     client.on("flags", onFlags);
 
     const lock = await client.getMailboxLock(folder, { readOnly: true });
+    // Best-effort graceful break — NOT what enforces the timeout (see the
+    // Promise.race below for why this alone isn't trustworthy).
     const timeout = setTimeout(() => {
       requestIdleBreak();
     }, timeoutMs);
     timeout.unref?.();
+
+    let timedOutHard = false;
+    let hardTimeoutTimer: NodeJS.Timeout | undefined;
 
     try {
       idleClient.maxIdleTime = timeoutMs;
@@ -570,7 +579,52 @@ export class SimpleIMAPService {
       }
 
       const idleStartedAt = Date.now();
-      await client.idle();
+
+      // imapflow's own maxIdleTime is a keepalive-refresh interval, NOT a
+      // caller-facing timeout: internally it breaks and immediately restarts
+      // a fresh IDLE every maxIdleTime ms (see imapflow's commands/idle.js
+      // runIdleLoop — `if (stillIdling) return runIdleLoop()`), so
+      // client.idle() can keep looping indefinitely instead of ever
+      // resolving when nothing else happens to break it. Confirmed live:
+      // timeoutSeconds:10 hung past 120s. requestIdleBreak() above is a
+      // best-effort attempt at imapflow's graceful preCheck/DONE path, but
+      // that path is exactly what's proven unreliable — the actual
+      // documented "always has a hard timeout" contract must not depend on
+      // it, so it's enforced here independently via Promise.race.
+      const idlePromise = client.idle().then(() => "idle-resolved" as const);
+      // Attach a catch immediately: if this loses the race, the connection
+      // gets force-disconnected below and this promise may later reject on
+      // the now-closed socket — that must not become an unhandled rejection.
+      idlePromise.catch(() => {});
+      const hardTimeout = new Promise<"hard-timeout">((resolve) => {
+        hardTimeoutTimer = setTimeout(() => resolve("hard-timeout"), timeoutMs + HARD_IDLE_TIMEOUT_GRACE_MS);
+        hardTimeoutTimer.unref?.();
+      });
+
+      const outcome = await Promise.race([idlePromise, hardTimeout]);
+
+      if (outcome === "hard-timeout") {
+        timedOutHard = true;
+        this.log.warn("IMAP IDLE exceeded its hard timeout; disconnecting to clear stuck state", "IMAPService", {
+          folder,
+          timeoutMs,
+        });
+        // Force-disconnect rather than trying to gracefully unwind — a dropped
+        // connection is unambiguous where imapflow's own break mechanism just
+        // proved it wasn't. This is also what prevents the stuck-IDLE busy-spin
+        // described above from surviving into the caller's next attempt.
+        await this.disconnect().catch(() => {});
+        const checkedAt = new Date().toISOString();
+        const changed = events.length > 0;
+        this.lastIdleAt = checkedAt;
+        this.lastIdleError = undefined;
+        if (changed) {
+          this.lastIdleChangeAt = checkedAt;
+          this.lastIdleEventCount = events.length;
+        }
+        return { folder, timeoutMs, checkedAt, changed, events };
+      }
+
       const idleElapsedMs = Date.now() - idleStartedAt;
       const checkedAt = new Date().toISOString();
       const changed = events.length > 0;
@@ -610,11 +664,17 @@ export class SimpleIMAPService {
       throw error;
     } finally {
       clearTimeout(timeout);
-      lock.release();
+      clearTimeout(hardTimeoutTimer);
       client.off("exists", onExists);
       client.off("expunge", onExpunge);
       client.off("flags", onFlags);
-      idleClient.maxIdleTime = previousMaxIdle;
+      if (!timedOutHard) {
+        // On the hard-timeout path the client was already force-disconnected
+        // above — its lock and maxIdleTime belong to a now-closed socket, and
+        // this.client is already undefined so the next call reconnects fresh.
+        lock.release();
+        idleClient.maxIdleTime = previousMaxIdle;
+      }
     }
   }
 

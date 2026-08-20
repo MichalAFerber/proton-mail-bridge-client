@@ -1235,31 +1235,31 @@ const TOOLS = [
   },
   {
     name: "get_email_stats",
-    description: "Return aggregate mailbox statistics: folder message counts, total unread counts, and a brief analytics sample. Use for a quick mailbox health overview. Prefer get_email_analytics for richer breakdowns such as top senders and hourly patterns. Prefer get_volume_trends for time-series daily volume data.",
+    description: "Return aggregate mailbox statistics: folder message counts, total unread counts, and a brief analytics sample. Use for a quick mailbox health overview. Prefer get_email_analytics for richer breakdowns such as top senders and hourly patterns. Prefer get_volume_trends for time-series daily volume data. Reads from the local index (auto-refreshed if stale or empty), not live IMAP — reflects the last sync, so read/unread counts can lag a change made from another client. Unread counts specifically can also lag a flag change (e.g. \\Seen set shortly after send) until that message's folder is next fully synced.",
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
         days: { type: "number", description: "Trailing days window.", default: 30 },
-        limit: { type: "number", description: "Maximum messages to sample.", default: 100 },
+        limit: { type: "number", description: "Maximum messages to sample.", default: 2000 },
       },
     },
   },
   {
     name: "get_email_analytics",
-    description: "Generate sampled mailbox analytics including top senders, busiest hours of day, and volume breakdown by folder. Use for productivity insights and communication pattern analysis. Prefer get_email_stats for a fast aggregate count summary. Prefer get_volume_trends for per-day message volume history.",
+    description: "Generate sampled mailbox analytics including top senders, busiest hours of day, and volume breakdown by folder. Use for productivity insights and communication pattern analysis. Prefer get_email_stats for a fast aggregate count summary. Prefer get_volume_trends for per-day message volume history. Reads from the local index (auto-refreshed if stale or empty), not live IMAP — reflects the last sync.",
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
       properties: {
         days: { type: "number", description: "Trailing days window.", default: 30 },
-        limit: { type: "number", description: "Maximum messages to sample.", default: 100 },
+        limit: { type: "number", description: "Maximum messages to sample.", default: 2000 },
       },
     },
   },
   {
     name: "get_contacts",
-    description: "Return the most frequently contacted email addresses ranked by interaction volume within the analytics sample window. Use to identify key correspondents or to pre-populate recipient lists. Requires the local mailbox index to be populated — call sync_emails first if the index is empty. Note: results are frequency-derived from recent email history, not a Proton contacts address book.",
+    description: "Return the most frequently contacted email addresses ranked by interaction volume within the analytics sample window. Use to identify key correspondents or to pre-populate recipient lists. Reads from the local index (auto-refreshed if stale or empty) — reflects the last sync. Note: results are frequency-derived from recent email history, not a Proton contacts address book.",
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
@@ -1270,7 +1270,7 @@ const TOOLS = [
   },
   {
     name: "get_volume_trends",
-    description: "Return daily inbound and outbound message counts for a trailing window. Use to spot volume spikes, identify quiet periods, or track communication trends over time. Prefer get_email_analytics for sender-level breakdowns and hourly patterns.",
+    description: "Return daily inbound and outbound message counts for a trailing window. Use to spot volume spikes, identify quiet periods, or track communication trends over time. Prefer get_email_analytics for sender-level breakdowns and hourly patterns. Reads from the local index (auto-refreshed if stale or empty), not live IMAP — reflects the last sync.",
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
@@ -1321,7 +1321,7 @@ const TOOLS = [
   },
   {
     name: "wait_for_mailbox_changes",
-    description: "Open an IMAP IDLE session and block until a mailbox change event arrives or the timeout expires. Use to detect real-time inbox activity without polling. Returns whether a change was observed. Always has a hard timeout (default 15s) to avoid blocking indefinitely — do not use in fire-and-forget pipelines.",
+    description: "Open an IMAP IDLE session and block until a mailbox change event arrives or the timeout expires. Use to detect real-time inbox activity without polling. Returns whether a change was observed. Always returns within timeoutSeconds plus a few seconds' grace, even if the underlying IDLE session gets stuck — do not use in fire-and-forget pipelines. A change that arrives may not always wake the call early; it is still detected and reported correctly, just not necessarily before the timeout.",
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: "object",
@@ -1333,13 +1333,13 @@ const TOOLS = [
   },
   {
     name: "sync_emails",
-    description: "Incrementally sync email metadata from IMAP into the local SQLite index, using stored checkpoints to avoid re-fetching already-indexed messages. Use before calling search_indexed_emails or get_threads when the index may be stale. Set full:true for a larger initial sample. Prefer run_background_sync to trigger the scheduled sync cycle.",
+    description: "Incrementally sync email metadata from IMAP into the local SQLite index, using stored checkpoints to avoid re-fetching already-indexed messages. Use before calling search_indexed_emails or get_threads when the index may be stale. The default incremental sync only ever adds/updates recent messages — it never notices a message that was archived, trashed, or moved out of the synced folder by any client, so search/thread/digest tools can keep showing a message as still present indefinitely. Set full:true (per folder — sync each folder you want cleaned up) to also detect and prune those, in addition to fetching a larger sample. Prefer run_background_sync to trigger the scheduled sync cycle (also incremental-only by default; see PROTONMAIL_AUTO_SYNC_FULL).",
     annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
       properties: {
         folder: { type: "string", description: "Folder to sync. Defaults to all folders." },
-        full: { type: "boolean", description: "Fetch a larger per-folder sample.", default: false },
+        full: { type: "boolean", description: "Fetch a larger per-folder sample, and detect/prune messages no longer present in this folder (moved, archived, trashed, or deleted by any client) that the default incremental sync would otherwise leave stale in the index forever.", default: false },
         limitPerFolder: { type: "number", description: "Override the per-folder fetch limit." },
         includeAttachmentText: {
           type: "boolean",
@@ -2552,6 +2552,29 @@ async function maybeRefreshLocalIndex(
     full: input.full,
     limitPerFolder: input.limitPerFolder,
   });
+}
+
+// get_email_stats/get_email_analytics/get_contacts/get_volume_trends used to
+// sample via imapService.getAnalyticsSample, which ran a live IMAP SEARCH
+// sequentially across every folder in the account — on a real account with a
+// normal number of labels (13 here) that reliably exceeded a client's 60s
+// request timeout, so all four tools failed on every call despite one being
+// documented as "fast". Reading from the local index instead (same source
+// get_actionable_threads/get_inbox_digest already use, refreshed the same
+// lazy way via maybeRefreshLocalIndex) is a single fast SQL query regardless
+// of folder count. Trade-off: results now reflect the last sync, not live
+// IMAP state — same staleness characteristics as every other local-index tool
+// (see sync_emails' own description for why that can lag behind trash/move).
+async function getAnalyticsSampleFromIndex(
+  imapService: SimpleIMAPService,
+  localIndexService: LocalIndexService,
+  days: number,
+  limit: number,
+): Promise<EmailSummary[]> {
+  await maybeRefreshLocalIndex(imapService, localIndexService, {});
+  const dateFrom = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const result = await localIndexService.search({ dateFrom, limit });
+  return result.emails;
 }
 
 async function runEmailAction(
@@ -4892,9 +4915,11 @@ export function createServer(
 
         case "get_email_stats": {
           const folders = await imapService.getFolders();
-          const sample = await imapService.getAnalyticsSample(
+          const sample = await getAnalyticsSampleFromIndex(
+            imapService,
+            localIndexService,
             typeof args.days === "number" ? args.days : 30,
-            typeof args.limit === "number" ? args.limit : 100,
+            typeof args.limit === "number" ? args.limit : 2000,
           );
           return createTextResult(
             analyticsService.getEmailStats(sample, folders, config.smtp.username),
@@ -4902,9 +4927,11 @@ export function createServer(
         }
 
         case "get_email_analytics": {
-          const sample = await imapService.getAnalyticsSample(
+          const sample = await getAnalyticsSampleFromIndex(
+            imapService,
+            localIndexService,
             typeof args.days === "number" ? args.days : 30,
-            typeof args.limit === "number" ? args.limit : 100,
+            typeof args.limit === "number" ? args.limit : 2000,
           );
           return createTextResult(
             analyticsService.getEmailAnalytics(sample, config.smtp.username),
@@ -4918,7 +4945,7 @@ export function createServer(
           // get_contacts returns a ranked list. Reusing limit as the sample size
           // meant limit: 5 silently ranked contacts from only 5 messages total.
           const limit = normalizeLimit(args.limit, 100);
-          const sample = await imapService.getAnalyticsSample(30, 500);
+          const sample = await getAnalyticsSampleFromIndex(imapService, localIndexService, 30, 3000);
           return createTextResult(
             analyticsService.getContacts(sample, limit, config.smtp.username),
           );
@@ -4926,7 +4953,7 @@ export function createServer(
 
         case "get_volume_trends": {
           const days = normalizeLimit(args.days, 30, 1, 365);
-          const sample = await imapService.getAnalyticsSample(days, 150);
+          const sample = await getAnalyticsSampleFromIndex(imapService, localIndexService, days, 3000);
           return createTextResult(analyticsService.getVolumeTrends(sample, days));
         }
 
