@@ -783,7 +783,7 @@ const TOOLS = [
   },
   {
     name: "snooze_email",
-    description: "Move an email out of sight into Folders/Snoozed and bring it back to its original folder at wakeAt. IMPORTANT: like scheduled sends, wake only fires while this MCP server process stays running — if the app is closed before wakeAt, the email wakes on next server startup instead of at the requested time, not reliably at wakeAt itself. Cancelable via cancel_snooze, which wakes it immediately.",
+    description: "Move an email out of sight into Folders/MCP-Snoozed and bring it back to its original folder at wakeAt. IMPORTANT: like scheduled sends, wake only fires while this MCP server process stays running — if the app is closed before wakeAt, the email wakes on next server startup instead of at the requested time, not reliably at wakeAt itself. Cancelable via cancel_snooze, which wakes it immediately.",
     annotations: { destructiveHint: false },
     inputSchema: {
       type: "object",
@@ -2679,24 +2679,20 @@ async function previewEmailAction(
   };
 }
 
+// Best-effort: confirms the sent copy landed in the Sent folder, purely for
+// the sentCopy:"[sent-copy:verified]" hint in the response. sentCopyVerify
+// already does its own robust folder resolution internally (by specialUse,
+// then by name) on every call — retrying it with different guessed folder
+// names here was redundant and, worse, sequential (up to 3 x 30s = 90s),
+// which blocked the send_email response long enough to trip the MCP
+// client's own request timeout on an email that had already sent
+// successfully. One bounded call; failing to verify quickly just means the
+// hint stays "unverified", never a false failure.
 async function verifySentCopy(
   imapService: SimpleIMAPService,
   messageId: string,
 ): Promise<{ found: boolean; uid?: number }> {
-  const resolver = (imapService as unknown as { resolveSentFolder?: () => Promise<string | undefined> }).resolveSentFolder;
-  const resolved = await resolver?.();
-  if (resolved) {
-    return imapService.sentCopyVerify(messageId, resolved, 30_000);
-  }
-
-  let lastResult: { found: boolean; uid?: number } = { found: false };
-  for (const sentFolderName of ["Sent", "Sent Mail", "Sent Messages"]) {
-    lastResult = await imapService.sentCopyVerify(messageId, sentFolderName, 30_000);
-    if (lastResult.found) {
-      return lastResult;
-    }
-  }
-  return lastResult;
+  return imapService.sentCopyVerify(messageId, "Sent", 8_000);
 }
 
 function getBulkMaxBatchSize(args: Record<string, unknown>): number {
@@ -5706,10 +5702,16 @@ export function createServer(
           "Could not connect to Proton Bridge. Make sure the Bridge app is running, and that PROTONMAIL_IMAP_HOST/PORT and PROTONMAIL_SMTP_HOST/PORT match the ports shown in Bridge's settings. Run run_doctor for a full connectivity check.",
         );
       }
-      throw new McpError(
-        ErrorCode.InternalError,
-        "An internal error occurred. Check get_logs for details, or run run_doctor for a full connectivity check.",
-      );
+      // Every throw new Error(...) across src/services and src/utils is a
+      // deliberately-worded, actionable message (not-found, validation,
+      // policy-disabled, etc.) with no secrets or stack traces in it —
+      // surface it directly instead of discarding it into a generic
+      // "check get_logs" message that sends the caller on a diagnostic
+      // wild goose chase for something that was already fully explained.
+      const message = error instanceof Error && error.message
+        ? error.message
+        : "An internal error occurred. Check get_logs for details, or run run_doctor for a full connectivity check.";
+      throw new McpError(ErrorCode.InternalError, message);
     }
   });
 

@@ -11,7 +11,10 @@ import { SimpleIMAPService } from "./simple-imap-service.js";
 // temp+rename writes, corrupted-file backup, orphaned .tmp cleanup, in-process
 // lock. Same process-lifetime caveat as the delivery queue: wake only fires
 // while this server stays running — see DeliveryQueueService's doc comment.
-const SNOOZE_FOLDER = "Folders/Snoozed";
+// "Folders/Snoozed" (without the MCP- prefix) is rejected by Proton's own
+// API with "Invalid name" (Code=2011) — confirmed against a live account.
+// Proton reserves that exact label name for its own native Snooze feature.
+const SNOOZE_FOLDER = "Folders/MCP-Snoozed";
 const CHECK_INTERVAL_MS = 15_000;
 // After this many consecutive failed wake attempts (e.g. the email was moved
 // or deleted before wakeAt so moveEmail can no longer find it), stop retrying

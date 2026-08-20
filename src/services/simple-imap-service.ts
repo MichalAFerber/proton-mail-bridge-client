@@ -2750,6 +2750,15 @@ export class SimpleIMAPService {
   // backup counterpart to importEmail. Reuses the same PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR
   // guard as attachment saving, since this writes arbitrary caller-controlled paths.
   async exportEmail(emailId: string, outputPath?: string): Promise<{ emailId: string; outputPath: string }> {
+    // Validate the output path (PROTONMAIL_ALLOW_FILE_DOWNLOAD_DIR, escape
+    // guard) before the IMAP fetch, not after — no point spending a network
+    // round-trip on a request that was always going to fail validation.
+    const resolvedPath = await this.resolveAttachmentOutputPath(
+      emailId,
+      { filename: `${emailId.replace(/[/:]/g, "_")}.eml` },
+      outputPath,
+    );
+
     const { folder, uid } = parseEmailId(emailId);
     const source = await this.withMailbox(folder, true, async (client) => {
       const message = await client.fetchOne(String(uid), { uid: true, source: true }, { uid: true });
@@ -2759,11 +2768,6 @@ export class SimpleIMAPService {
       return message.source;
     });
 
-    const resolvedPath = await this.resolveAttachmentOutputPath(
-      emailId,
-      { filename: `${emailId.replace(/[/:]/g, "_")}.eml` },
-      outputPath,
-    );
     await mkdir(dirname(resolvedPath), { recursive: true });
     await writeFile(resolvedPath, source);
 

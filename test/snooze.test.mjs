@@ -44,7 +44,7 @@ function fakeImap() {
   return {
     moves: [],
     async createFolder() {
-      return { path: "Folders/Snoozed", created: true };
+      return { path: "Folders/MCP-Snoozed", created: true };
     },
     async moveEmail(emailId, targetFolder) {
       this.moves.push({ from: emailId, to: targetFolder });
@@ -71,7 +71,7 @@ async function withTempDir(fn) {
   }
 }
 
-test("snooze moves the email into Folders/Snoozed and persists a pending record", async () => {
+test("snooze moves the email into Folders/MCP-Snoozed and persists a pending record", async () => {
   await withTempDir(async (dataDir) => {
     const imap = fakeImap();
     const service = new SnoozeService(createConfig(dataDir), imap);
@@ -80,9 +80,9 @@ test("snooze moves the email into Folders/Snoozed and persists a pending record"
 
     assert.equal(record.status, "pending");
     assert.equal(record.originalFolder, "INBOX");
-    assert.ok(record.currentEmailId.startsWith("Folders/Snoozed::"));
+    assert.ok(record.currentEmailId.startsWith("Folders/MCP-Snoozed::"));
     assert.equal(imap.moves.length, 1);
-    assert.equal(imap.moves[0].to, "Folders/Snoozed");
+    assert.equal(imap.moves[0].to, "Folders/MCP-Snoozed");
   });
 });
 
@@ -155,12 +155,12 @@ test("checkDue stops retrying a permanently-failing wake and marks it terminally
     // moveEmail always throws — simulates the snoozed email having been
     // moved or deleted before wakeAt, so the wake can never succeed.
     const imap = {
-      async createFolder() { return { path: "Folders/Snoozed", created: true }; },
+      async createFolder() { return { path: "Folders/MCP-Snoozed", created: true }; },
       async moveEmail() { throw new Error("message not found"); },
     };
     const service = new SnoozeService(createConfig(dataDir), imap);
 
-    // snooze() itself calls moveEmail (to move it INTO Folders/Snoozed), so
+    // snooze() itself calls moveEmail (to move it INTO Folders/MCP-Snoozed), so
     // build the record directly on disk instead, already in the snoozed
     // location, to isolate the wake-retry behavior from the snooze-out call.
     const record = {
@@ -169,7 +169,7 @@ test("checkDue stops retrying a permanently-failing wake and marks it terminally
       wakeAt: new Date(Date.now() - 1_000).toISOString(),
       status: "pending",
       originalFolder: "INBOX",
-      currentEmailId: "Folders/Snoozed::999",
+      currentEmailId: "Folders/MCP-Snoozed::999",
     };
     const { mkdir, writeFile } = await import("node:fs/promises");
     const { join } = await import("node:path");
