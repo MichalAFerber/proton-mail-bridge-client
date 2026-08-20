@@ -2,9 +2,11 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [1.18.0] — 2026-08-20
 
 ### Fixed
+- **Dockerfile build was broken.** `npm ci --omit=dev` skipped the `typescript` devDependency, but `npm ci` also auto-runs the `prepare` script (`npm run build` → `tsc`) before source was even copied into the image — guaranteed failure. This is what Glama's build inspection was failing on. Fixed by installing with `--ignore-scripts` (keeps devDependencies, skips the premature build attempt), building explicitly after source is copied in, then `npm prune --omit=dev` for the same lean final image as intended.
+- Cleared two newly-disclosed high-severity dependency advisories: `nanoid` (`npm audit fix`) and `deepmerge-ts`, transitively pulled in via `mailparser` → `html-to-text` (fixed with a targeted `overrides` pin to `html-to-text@10.0.1` rather than the risky `mailparser` downgrade `npm audit fix --force` wanted).
 
 Found by actually exercising the server against a live Proton Bridge account end-to-end (real send, real IMAP moves, real snooze/undo-send/export/import) instead of relying on mocked-service unit tests, after a fair question about why the SMTP default bug (below) hadn't been caught sooner.
 
