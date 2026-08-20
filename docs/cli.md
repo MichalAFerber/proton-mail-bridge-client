@@ -35,6 +35,18 @@ proton-mail-bridge-client meeting-context alice@example.com
 ```bash
 proton-mail-bridge-client send --to bob@example.com --subject "Hey" --body "Hello"
 echo "Hello" | proton-mail-bridge-client send --to bob@example.com --subject "Hey"
+
+# Queue with an undo window instead of sending immediately (overrides
+# PROTONMAIL_SEND_DELAY_SECONDS for this one send; 0 forces immediate send
+# even if the server has a default window configured)
+proton-mail-bridge-client send --to bob@example.com --subject "Hey" --body "Hello" --undo-window 10
+
+# A queued send only fires while an MCP server is running against the same
+# data directory — a plain CLI invocation exits right after queuing, so
+# without --wait it won't deliver on its own. --wait keeps this command
+# open (polling) until the send actually fires or is canceled elsewhere.
+proton-mail-bridge-client send --to bob@example.com --subject "Hey" --body "Hello" --undo-window 10 --wait
+
 proton-mail-bridge-client reply INBOX::25642 --body "On it."
 proton-mail-bridge-client reply INBOX::25642 --reply-all --body "On it."
 proton-mail-bridge-client forward INBOX::25642 --to carol@example.com

@@ -140,6 +140,7 @@ const TOOLS = [
         },
         confirmed: { type: "boolean", description: "Set to true to confirm this irreversible send when PROTONMAIL_CONFIRM_DESTRUCTIVE is enabled." },
         dryRun: { type: "boolean", description: "Preview the full recipient set and validate without sending.", default: false },
+        undoWindowSeconds: { type: "number", description: "Override PROTONMAIL_SEND_DELAY_SECONDS for this one send: queue it for this many seconds (cancelable via cancel_send) instead of the server's configured default. 0 sends immediately even if the server has a default window configured. Same caveat as the server default: only fires while this server process stays running." },
       },
       required: ["to", "subject"],
     },
@@ -3248,8 +3249,18 @@ export function createServer(
 
           // Undo-send: PROTONMAIL_SEND_DELAY_SECONDS > 0 queues instead of sending
           // immediately, cancelable via cancel_send until the window elapses.
-          if (config.runtime.sendDelaySeconds > 0) {
-            const sendAt = new Date(Date.now() + config.runtime.sendDelaySeconds * 1000).toISOString();
+          // undoWindowSeconds overrides the server default for this one send —
+          // including forcing 0 (send immediately) when a default is configured.
+          let undoWindowSeconds = config.runtime.sendDelaySeconds;
+          if (args.undoWindowSeconds !== undefined) {
+            const requested = Number(args.undoWindowSeconds);
+            if (!Number.isInteger(requested) || requested < 0 || requested > 300) {
+              throw new McpError(ErrorCode.InvalidParams, "undoWindowSeconds must be an integer between 0 and 300.");
+            }
+            undoWindowSeconds = requested;
+          }
+          if (undoWindowSeconds > 0) {
+            const sendAt = new Date(Date.now() + undoWindowSeconds * 1000).toISOString();
             const queued = await withAudit(auditService, name, args, async () =>
               deliveryQueueService.enqueue(emailPayload, sendAt, "undo_send"),
             );
@@ -3257,7 +3268,7 @@ export function createServer(
               queued: true,
               id: queued.id,
               sendAt: queued.sendAt,
-              note: `Not sent yet — will send in ~${config.runtime.sendDelaySeconds}s unless canceled with cancel_send. This server must stay running for the send to fire; if it's restarted before sendAt, the send fires on next startup instead.`,
+              note: `Not sent yet — will send in ~${undoWindowSeconds}s unless canceled with cancel_send. This server must stay running for the send to fire; if it's restarted before sendAt, the send fires on next startup instead.`,
             });
           }
 

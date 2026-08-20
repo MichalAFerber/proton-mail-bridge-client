@@ -116,7 +116,7 @@ function printHelp(): void {
       "  batch <action> <ids…>  Apply action to multiple emails (or --ids)",
       "  bulk-delete            Delete matching emails (--folder --from --dry-run)",
       "  bulk-move <folder>     Move matching emails (--folder --from --dry-run)",
-      "  send                   Send an email (--to --subject --body or stdin)",
+      "  send                   Send an email (--to --subject --body or stdin, --undo-window <s>, --wait)",
       "  reply <emailId>        Reply to an email (--body or stdin, --reply-all)",
       "  forward <emailId>      Forward an email (--to, optional --body or stdin)",
       "  test-email <addr>      Send a test email to verify SMTP",
@@ -962,6 +962,20 @@ async function runSend(parsed: ParsedCliArgs): Promise<void> {
   if (!body) throw new Error("send requires --body or body piped via stdin");
 
   const wantJson = isTruthyFlag(parsed.flags.json);
+  const wait = isTruthyFlag(parsed.flags.wait);
+  const undoWindowFlag = getStringFlag(parsed.flags, "undo-window");
+  // Not getNumberFlag: 0 is a meaningful, valid value here (force an
+  // immediate send even when the server has a default undo window
+  // configured), but getNumberFlag rejects <= 0 for the flags where only a
+  // positive count makes sense (limit, offset, ...).
+  let undoWindowSeconds: number | undefined;
+  if (undoWindowFlag !== undefined) {
+    const requested = Number.parseInt(undoWindowFlag, 10);
+    if (!Number.isInteger(requested) || requested < 0 || requested > 300) {
+      throw new Error("--undo-window must be an integer between 0 and 300.");
+    }
+    undoWindowSeconds = requested;
+  }
   await withMcpClient(async (client) => {
     const result = await client.callTool({
       name: "send_email",
@@ -974,15 +988,51 @@ async function runSend(parsed: ParsedCliArgs): Promise<void> {
         isHtml: isTruthyFlag(parsed.flags.html) || undefined,
         dryRun: isTruthyFlag(parsed.flags["dry-run"]) || undefined,
         confirmed: isTruthyFlag(parsed.flags.confirmed) || undefined,
+        undoWindowSeconds,
       },
     });
     const parsedResult = result as Record<string, unknown>;
-    printToolCallResult(parsedResult, wantJson);
     const structured = (parsedResult.structuredContent ?? {}) as Record<string, unknown>;
-    if (structured.queued && !wantJson) {
-      process.stderr.write(
-        "Note: this queued send only fires while an MCP server (e.g. Claude Desktop) is running against the same data directory — this CLI process exits immediately after queuing, so it will NOT deliver on its own.\n",
-      );
+
+    if (!structured.queued) {
+      printToolCallResult(parsedResult, wantJson);
+      return;
+    }
+
+    if (!wait) {
+      printToolCallResult(parsedResult, wantJson);
+      if (!wantJson) {
+        process.stderr.write(
+          "Note: this queued send only fires while an MCP server (e.g. Claude Desktop) is running against the same data directory — this CLI process exits immediately after queuing, so it will NOT deliver on its own. Pass --wait to have this command stay open until it fires or is canceled.\n",
+        );
+      }
+      return;
+    }
+
+    // --wait: keep this process (and its spawned server) alive until the
+    // queued send actually resolves, closing exactly the gap in the note
+    // above — polls list_scheduled_sends since there's no per-id get.
+    const id = structured.id as string;
+    if (!wantJson) {
+      process.stderr.write(`Waiting for queued send ${id} to fire (sendAt ${structured.sendAt})...\n`);
+    }
+    for (;;) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 2000));
+      const listResult = await client.callTool({ name: "list_scheduled_sends", arguments: {} });
+      // list_scheduled_sends returns an array — MCP's structuredContent must
+      // be an object, so arrays only come back through the text content.
+      const listContent = (listResult as { content?: Array<{ type: string; text?: string }> }).content ?? [];
+      const rawText = listContent.find((entry) => entry.type === "text")?.text ?? "[]";
+      const items = JSON.parse(rawText) as Array<Record<string, unknown>>;
+      const item = items.find((entry) => entry.id === id);
+      // "sending" is a transient claimed-but-not-finished state (see the
+      // atomic pending->sending claim in DeliveryQueueService.checkDue) —
+      // keep polling through it, only stop at a genuinely terminal status.
+      const terminal = !item || ["sent", "failed", "canceled"].includes(String(item.status));
+      if (terminal) {
+        process.stdout.write(wantJson ? json(item ?? { id, status: "unknown" }) : `${item?.status ?? "unknown"}: ${id}\n`);
+        return;
+      }
     }
   });
 }

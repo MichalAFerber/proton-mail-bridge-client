@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+- `send_email` accepts an optional `undoWindowSeconds`, overriding `PROTONMAIL_SEND_DELAY_SECONDS` for that one send — `0` forces an immediate send even when the server has a default window configured, any other value (0–300) queues for that many seconds regardless of the server default.
+- CLI `send --undo-window <seconds>` exposes the override; `send --wait` keeps the command open (polling) until the queued send actually reaches a terminal state (`sent`/`failed`/`canceled`) instead of exiting right after queuing — closes the gap where a plain CLI invocation queues a send that then never fires because nothing is left running to deliver it.
+- README's recommended system prompt now suggests offering a short undo window before sending anything hard to walk back.
+
+### Fixed
+- The CLI's own `--undo-window` parsing rejected `0` (reused a helper meant for strictly-positive flags like `--limit`) — exactly the value needed to force an immediate send. Found live-testing the new flag against a real Bridge instance before shipping it.
+- The new `send --wait` polling loop stopped at the delivery queue's transient `sending` state (claimed but not yet complete) instead of waiting for a terminal one, printing a misleading in-progress status as if it were final. Found the same way.
+
 ## [1.18.0] — 2026-08-20
 
 ### Fixed

@@ -295,6 +295,7 @@ You have access to my Proton Mail inbox via the proton-mail-bridge tool.
 Rules:
 - Always use dryRun: true before any batch operation (batch_email_action, apply_thread_action).
 - Before calling send_email, reply_to_email, or forward_email, summarise what you are about to send and ask me to confirm.
+- For anything important or hard to walk back (a wide CC list, a sensitive topic, an attachment), offer a short undo window via send_email's undoWindowSeconds instead of sending immediately — remind me it only protects against mistakes noticed in the next few seconds, not a change of mind days later.
 - Before calling delete_email, confirm with me — deletion is permanent.
 - Prefer create_draft over send_email when composing from scratch.
 - Use get_inbox_digest or get_actionable_threads as your starting point for triage sessions.
