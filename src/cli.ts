@@ -221,6 +221,21 @@ function getNumberFlag(flags: CliFlags, key: string, fallback: number): number {
   return parsed;
 }
 
+// Same as getNumberFlag but for flags like --offset where 0 is the
+// documented default and a legitimate explicit value ("start from the
+// beginning"), not an error — only negative/non-integer values are invalid.
+function getOffsetFlag(flags: CliFlags, key: string, fallback: number): number {
+  const value = flags[key];
+  if (typeof value !== "string" || !value.trim()) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`--${key} must be a non-negative integer.`);
+  }
+  return parsed;
+}
+
 function json(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
@@ -849,9 +864,11 @@ function getReplyRecipients(
 ): { to: string[]; cc: string[] } {
   const owner = lowerCaseAddress(ownerEmail);
   const primary = addressValues(detail.replyTo).length > 0 ? detail.replyTo : detail.from;
-  const to = uniqueAddresses(
-    addressValues(primary).filter((address) => lowerCaseAddress(address) !== owner),
-  );
+  const primaryAddresses = addressValues(primary);
+  const strippedTo = uniqueAddresses(primaryAddresses.filter((address) => lowerCaseAddress(address) !== owner));
+  // Mirrors the same fix in index.ts's getReplyRecipients: a self-addressed
+  // email has no other party to reply to, so don't strip down to zero.
+  const to = strippedTo.length > 0 ? strippedTo : uniqueAddresses(primaryAddresses);
   if (!replyAll) return { to, cc: [] };
   const cc = uniqueAddresses([...addressValues(detail.to), ...addressValues(detail.cc)]).filter(
     (address) => {
@@ -1218,7 +1235,7 @@ async function runGetLogs(parsed: ParsedCliArgs): Promise<void> {
       arguments: {
         limit: getNumberFlag(parsed.flags, "limit", 100),
         level: getStringFlag(parsed.flags, "level"),
-        offset: getStringFlag(parsed.flags, "offset") ? getNumberFlag(parsed.flags, "offset", 0) : undefined,
+        offset: getStringFlag(parsed.flags, "offset") ? getOffsetFlag(parsed.flags, "offset", 0) : undefined,
       },
     });
     printToolCallResult(result as Record<string, unknown>, wantJson);
@@ -1245,7 +1262,7 @@ async function runEmails(parsed: ParsedCliArgs): Promise<void> {
       arguments: {
         folder: getStringFlag(parsed.flags, "folder") || "INBOX",
         limit: getNumberFlag(parsed.flags, "limit", 50),
-        offset: getNumberFlag(parsed.flags, "offset", 0),
+        offset: getOffsetFlag(parsed.flags, "offset", 0),
       },
     });
     printToolCallResult(result as Record<string, unknown>, wantJson);
@@ -1633,7 +1650,7 @@ async function runRemoteDrafts(parsed: ParsedCliArgs): Promise<void> {
   await withMcpClient(async (client) => {
     const result = await client.callTool({
       name: "list_remote_drafts",
-      arguments: { limit: getNumberFlag(parsed.flags, "limit", 50), offset: getNumberFlag(parsed.flags, "offset", 0) },
+      arguments: { limit: getNumberFlag(parsed.flags, "limit", 50), offset: getOffsetFlag(parsed.flags, "offset", 0) },
     });
     printToolCallResult(result as Record<string, unknown>, wantJson);
   });

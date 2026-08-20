@@ -116,6 +116,24 @@ function collectErrorText(error: unknown): string {
   return values.join(" ").toLowerCase();
 }
 
+// imapflow throws a generic Error("Command failed") for every IMAP NO/BAD
+// response (mailbox create/rename/delete, move, flag change, ...) — the
+// server's actual reason (e.g. Bridge rejecting a reserved folder name)
+// lives in the non-standard `.responseText` property, never in `.message`.
+// Left alone, every one of these surfaces as an unhelpful "Command failed"
+// with no clue why. Surface both. Found live: create_label "Starred" failed
+// with just "Command failed" instead of Bridge's actual rejection reason.
+export function describeImapError(error: unknown): string | undefined {
+  if (!(error instanceof Error) || !error.message) {
+    return undefined;
+  }
+  const responseText = (error as { responseText?: unknown }).responseText;
+  if (typeof responseText === "string" && responseText.trim() && !error.message.includes(responseText.trim())) {
+    return `${error.message}: ${responseText.trim()}`;
+  }
+  return error.message;
+}
+
 export function isLikelyAuthenticationError(error: unknown): boolean {
   if (!error) {
     return false;
@@ -969,6 +987,30 @@ export class SimpleIMAPService {
       return attachment.content.toString("utf8");
     }
     return undefined;
+  }
+
+  // Fetches full attachment content for internal re-attachment (forwarding to
+  // SMTP) — deliberately NOT gated by assertAttachmentWithinInlineLimit below,
+  // which bounds base64 returned inline in an MCP *tool response*, a much
+  // smaller concern than what SMTP can actually send. Reusing
+  // getAttachmentContent here would make forwarding an email with anything
+  // bigger than maxInlineBytes throw "too large for inline delivery" instead
+  // of just forwarding it.
+  async getAttachmentForForward(emailId: string, attachmentId: string): Promise<{
+    filename: string;
+    content: string;
+    contentType?: string;
+    cid?: string;
+    contentDisposition?: string;
+  }> {
+    const attachment = await this.getParsedAttachment(emailId, attachmentId);
+    return {
+      filename: attachment.filename ?? "attachment",
+      content: attachment.content.toString("base64"),
+      contentType: attachment.contentType,
+      cid: attachment.cid,
+      contentDisposition: attachment.disposition,
+    };
   }
 
   async getAttachmentContent(

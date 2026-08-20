@@ -268,6 +268,15 @@ export class DeliveryQueueService {
     }
   }
 
+  // ponytail: withLock only serializes calls within this process — two
+  // separate processes sharing this dataDir (e.g. a CLI `cancel-send` racing
+  // this server's own checkDue()) can still interleave load-modify-save and
+  // lose one side's update. No OS-level lock (flock/lockfile) is taken. A
+  // bespoke cross-process lockfile trades a rare millisecond-window lost
+  // update for a worse failure mode (a crash mid-lock leaves a stale lockfile
+  // that blocks every future send). Real upgrade path if this ever matters:
+  // move this JSON store into the SQLite index already used elsewhere
+  // (better-sqlite3), which has real cross-process locking for free.
   private async save(store: DeliveryQueueFile): Promise<void> {
     await mkdir(dirname(this.queuePath), { recursive: true });
     const tempPath = `${this.queuePath}.tmp`;

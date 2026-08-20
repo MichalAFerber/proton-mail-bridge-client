@@ -22,7 +22,7 @@ import { BackgroundSyncService } from "./services/background-sync-service.js";
 import { DeliveryQueueService } from "./services/delivery-queue-service.js";
 import { DraftStoreService } from "./services/draft-store-service.js";
 import { LocalIndexService } from "./services/local-index-service.js";
-import { isLikelyAuthenticationError, isLikelyConnectionError, SimpleIMAPService } from "./services/simple-imap-service.js";
+import { describeImapError, isLikelyAuthenticationError, isLikelyConnectionError, SimpleIMAPService } from "./services/simple-imap-service.js";
 import { applySignature, SMTPService } from "./services/smtp-service.js";
 import { SnoozeService } from "./services/snooze-service.js";
 import { TemplateService } from "./services/template-service.js";
@@ -2166,14 +2166,21 @@ function buildForwardText(detail: EmailDetail, body?: string): string {
     .join("\n");
 }
 
-function getReplyRecipients(
+export function getReplyRecipients(
   detail: EmailDetail,
   ownerEmail: string,
   replyAll: boolean,
 ): { to: string[]; cc: string[] } {
   const owner = lowerCaseAddress(ownerEmail);
   const primary = addressValues(detail.replyTo).length > 0 ? detail.replyTo : detail.from;
-  const to = uniqueAddresses(addressValues(primary).filter((address) => lowerCaseAddress(address) !== owner));
+  const primaryAddresses = addressValues(primary);
+  const strippedTo = uniqueAddresses(primaryAddresses.filter((address) => lowerCaseAddress(address) !== owner));
+  // A self-addressed email (e.g. a "note to self") has no other party to
+  // reply to — stripping the owner then leaves zero recipients and every
+  // reply throws "Unable to infer reply recipient." Every real mail client
+  // replies back to the same address in that case instead of refusing.
+  // Found live: replying to a self-sent test fixture failed outright.
+  const to = strippedTo.length > 0 ? strippedTo : uniqueAddresses(primaryAddresses);
 
   if (!replyAll) {
     return { to, cc: [] };
@@ -3560,9 +3567,20 @@ export function createServer(
           const htmlBody = markdownBodyFwd ? renderMarkdown(markdownBodyFwd).html : undefined;
           const fromNameFwd = optionalString(args, "fromName");
           const sanitizeHtmlFwd = normalizeBoolean(args.sanitizeHtml, true);
-          const attachments = optionalAttachmentList(args.attachments);
+          // args.attachments are new attachments the caller wants to add to the
+          // forward — they are NOT the original message's attachments. Despite
+          // the tool's own description ("preserving original attachments") and
+          // includeAttachments defaulting to true, nothing here ever fetched the
+          // original attachments themselves, so every forward silently dropped
+          // them unless the caller had already fetched and resupplied their
+          // content manually. attachmentParts was accepted in the schema and
+          // documented but never read at all. Found live: forwarding a fixture
+          // with one attachment produced a forward with zero attachments.
+          const attachments = optionalAttachmentList(args.attachments) ?? [];
           const includeAttachments = normalizeBoolean(args.includeAttachments, true);
-          const fwdAttachments = includeAttachments ? attachments : [];
+          const attachmentParts = Array.isArray(args.attachmentParts)
+            ? (args.attachmentParts as unknown[]).map(String)
+            : undefined;
 
           ensureValidEmails(to, "to");
           ensureValidEmails(cc, "cc");
@@ -3580,6 +3598,24 @@ export function createServer(
           if (dryRunFwd) {
             return createTextResult({ dryRun: true, wouldSendTo: { to, cc, bcc }, subject: prefixedSubject(detail.subject, "Fwd:"), note: "No email was sent." });
           }
+
+          // args.attachments are new attachments the caller wants to add to the
+          // forward — they are NOT the original message's attachments. Despite
+          // the tool's own description ("preserving original attachments") and
+          // includeAttachments defaulting to true, nothing here ever fetched the
+          // original attachments themselves, so every forward silently dropped
+          // them unless the caller had already fetched and resupplied their
+          // content manually. attachmentParts was accepted in the schema and
+          // documented but never read at all. Found live: forwarding a fixture
+          // with one attachment produced a forward with zero attachments.
+          const originalAttachments = includeAttachments
+            ? await Promise.all(
+                detail.attachments
+                  .filter((a) => a.id && (!attachmentParts || (a.part !== undefined && attachmentParts.includes(a.part))))
+                  .map((a) => imapService.getAttachmentForForward(detail.id, a.id as string)),
+              )
+            : [];
+          const fwdAttachments = [...originalAttachments, ...attachments];
 
           // Signature goes right after the user's own note, before the
           // "---------- Forwarded message ---------" block — not at the very
@@ -5719,9 +5755,11 @@ export function createServer(
       // surface it directly instead of discarding it into a generic
       // "check get_logs" message that sends the caller on a diagnostic
       // wild goose chase for something that was already fully explained.
-      const message = error instanceof Error && error.message
-        ? error.message
-        : "An internal error occurred. Check get_logs for details, or run run_doctor for a full connectivity check.";
+      // describeImapError additionally recovers imapflow's real failure
+      // reason (its .responseText) for the many call sites that let a raw
+      // IMAP NO/BAD response bubble up as a bare "Command failed".
+      const message = describeImapError(error)
+        ?? "An internal error occurred. Check get_logs for details, or run run_doctor for a full connectivity check.";
       throw new McpError(ErrorCode.InternalError, message);
     }
   });

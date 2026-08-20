@@ -170,6 +170,8 @@ export class TemplateService {
     }
   }
 
+  // ponytail: same cross-process race as DeliveryQueueService.save — see that
+  // comment for why it's left unlocked and the real upgrade path (SQLite).
   private async save(store: TemplateFile): Promise<void> {
     await mkdir(dirname(this.storePath), { recursive: true });
     const tempPath = `${this.storePath}.tmp`;

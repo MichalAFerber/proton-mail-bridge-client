@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  describeImapError,
   isLikelyAuthenticationError,
   isLikelyConnectionError,
   mapHeaderValue,
@@ -151,6 +152,30 @@ test("isLikelyAuthenticationError and isLikelyConnectionError classify errors co
 
   assert.equal(isLikelyAuthenticationError(undefined), false);
   assert.equal(isLikelyConnectionError(undefined), false);
+});
+
+test("describeImapError recovers imapflow's real failure reason from .responseText", () => {
+  // Reproduces the real shape imapflow throws for every IMAP NO/BAD response —
+  // .message is always the generic "Command failed", the actual server reason
+  // (here, Proton rejecting a reserved label name) only lives in .responseText.
+  const imapflowError = Object.assign(new Error("Command failed"), {
+    responseText: "422 POST https://mail-api.proton.me/core/v4/labels: Invalid name (Code=2011, Status=422)",
+  });
+  assert.equal(
+    describeImapError(imapflowError),
+    "Command failed: 422 POST https://mail-api.proton.me/core/v4/labels: Invalid name (Code=2011, Status=422)",
+  );
+
+  // A plain Error (our own throw new Error(...) call sites) has no
+  // responseText — message passes through unchanged, not "undefined" appended.
+  assert.equal(describeImapError(new Error("Folder does not exist")), "Folder does not exist");
+
+  // responseText already folded into message by some other path — don't duplicate it.
+  const alreadyIncluded = Object.assign(new Error("Command failed: Invalid name"), { responseText: "Invalid name" });
+  assert.equal(describeImapError(alreadyIncluded), "Command failed: Invalid name");
+
+  assert.equal(describeImapError(undefined), undefined);
+  assert.equal(describeImapError("just a string"), undefined);
 });
 
 test("mapHeaderValue never produces the literal string '[object Object]'", () => {
