@@ -2921,7 +2921,11 @@ export function buildConfigFromEnv(): ProtonMailConfig {
     );
   }
 
-  const smtpPort = parseIntegerEnv("PROTONMAIL_SMTP_PORT", 587, 1, 65_535);
+  const smtpPort = parseIntegerEnv("PROTONMAIL_SMTP_PORT", 1025, 1, 65_535);
+  // Bridge's local SMTP port requires implicit TLS from the first byte (no
+  // plaintext greeting, no STARTTLS) — confirmed against a live Bridge
+  // instance. Overridable for non-Bridge SMTP setups.
+  const smtpSecure = parseBooleanEnv("PROTONMAIL_SMTP_SECURE", true);
   const imapPort = parseIntegerEnv("PROTONMAIL_IMAP_PORT", 1143, 1, 65_535);
   const debug = parseBooleanEnv("DEBUG", false);
   const readOnly = parseBooleanEnv("PROTONMAIL_READ_ONLY", false);
@@ -2963,7 +2967,7 @@ export function buildConfigFromEnv(): ProtonMailConfig {
     smtp: {
       host: smtpHost,
       port: smtpPort,
-      secure: smtpPort === 465,
+      secure: smtpSecure,
       username,
       password,
     },

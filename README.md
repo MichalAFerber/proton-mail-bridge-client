@@ -346,6 +346,7 @@ PROTONMAIL_IMAP_PORT='1143'
 PROTONMAIL_IMAP_SECURE='false'
 PROTONMAIL_SMTP_HOST='127.0.0.1'
 PROTONMAIL_SMTP_PORT='1025'
+PROTONMAIL_SMTP_SECURE='true'         # Bridge's local SMTP port requires implicit TLS from the first byte; set false only for a non-Bridge SMTP relay
 
 # Secrets via file or command (avoids raw credentials in config)
 PROTONMAIL_USERNAME_FILE='/path/to/user.txt'

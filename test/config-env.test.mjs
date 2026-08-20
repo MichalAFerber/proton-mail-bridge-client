@@ -25,6 +25,8 @@ const KEYS = [
   "PROTONMAIL_IDLE_WATCH",
   "PROTONMAIL_IDLE_MAX_SECONDS",
   "PROTONMAIL_SEND_DELAY_SECONDS",
+  "PROTONMAIL_SMTP_PORT",
+  "PROTONMAIL_SMTP_SECURE",
 ];
 
 test("buildConfigFromEnv reads *_FILE secrets and runtime policy flags", async () => {
@@ -138,6 +140,58 @@ test("buildConfigFromEnv reads *_COMMAND secrets", () => {
     const config = buildConfigFromEnv();
     assert.equal(config.smtp.username, "owner@example.com");
     assert.equal(config.smtp.password, "bridge-secret");
+  } finally {
+    for (const key of KEYS) {
+      if (previous[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = previous[key];
+      }
+    }
+  }
+});
+
+// Regression test: PROTONMAIL_SMTP_PORT used to default to 587 with `secure`
+// inferred as `smtpPort === 465` — Bridge's actual default local SMTP port
+// is 1025 and requires implicit TLS from the first byte (no STARTTLS
+// greeting at all), confirmed against a live Bridge instance. The old
+// defaults meant SMTP silently failed for anyone following the documented
+// zero-config setup (just PROTONMAIL_USERNAME/PASSWORD).
+test("buildConfigFromEnv defaults SMTP to Bridge's real port/TLS requirements with zero SMTP-specific config", () => {
+  const previous = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
+
+  try {
+    process.env.PROTONMAIL_USERNAME = "owner@example.com";
+    process.env.PROTONMAIL_PASSWORD = "bridge-secret";
+    delete process.env.PROTONMAIL_SMTP_PORT;
+    delete process.env.PROTONMAIL_SMTP_SECURE;
+
+    const config = buildConfigFromEnv();
+    assert.equal(config.smtp.port, 1025);
+    assert.equal(config.smtp.secure, true);
+  } finally {
+    for (const key of KEYS) {
+      if (previous[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = previous[key];
+      }
+    }
+  }
+});
+
+test("buildConfigFromEnv lets PROTONMAIL_SMTP_PORT/PROTONMAIL_SMTP_SECURE override the Bridge defaults", () => {
+  const previous = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
+
+  try {
+    process.env.PROTONMAIL_USERNAME = "owner@example.com";
+    process.env.PROTONMAIL_PASSWORD = "bridge-secret";
+    process.env.PROTONMAIL_SMTP_PORT = "2525";
+    process.env.PROTONMAIL_SMTP_SECURE = "false";
+
+    const config = buildConfigFromEnv();
+    assert.equal(config.smtp.port, 2525);
+    assert.equal(config.smtp.secure, false);
   } finally {
     for (const key of KEYS) {
       if (previous[key] === undefined) {

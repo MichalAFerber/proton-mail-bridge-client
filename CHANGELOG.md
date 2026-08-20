@@ -5,6 +5,7 @@ All notable changes to this project are documented here.
 ## [Unreleased]
 
 ### Fixed
+- **SMTP was silently broken on the documented zero-config setup.** `PROTONMAIL_SMTP_PORT` defaulted to `587` instead of Bridge's actual default `1025`, and `secure` was inferred as `smtpPort === 465` — wrong for Bridge, whose local SMTP port requires implicit TLS from the first byte (no plaintext greeting, no STARTTLS), confirmed with a raw socket test against a live Bridge instance. Anyone connecting with just `PROTONMAIL_USERNAME`/`PROTONMAIL_PASSWORD` (the documented setup) got `connect ECONNREFUSED 127.0.0.1:587` or `Greeting never received` on every send. Fixed the default port and added an explicit `PROTONMAIL_SMTP_SECURE` (default `true`) instead of inferring TLS from the port number.
 - `PROTONMAIL_TOOL_TIER=core` no longer exposes both `search_emails` and `search_indexed_emails` — the tier exists to reduce tool-selection overlap for weaker models, and had the exact overlap it was meant to avoid. Only `search_indexed_emails` (faster, offline-capable, already the "prefer" default) remains in core; `search_emails` is still available under the full tier. Flagged by Glama's tool-overlap review.
 
 ## [1.17.1] — 2026-08-13
