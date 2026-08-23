@@ -1,0 +1,10 @@
+title: proton-mail-bridge-client
+description: Local-first Proton Mail CLI and MCP server through Proton Bridge — search, read, draft, send, and act on mail from Claude Desktop or the terminal.
+
+theme: jekyll-theme-cayman
+repository: MichalAFerber/proton-mail-bridge-client
+show_downloads: false
+
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap

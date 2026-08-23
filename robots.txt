@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://michalaferber.github.io/proton-mail-bridge-client/sitemap.xml
