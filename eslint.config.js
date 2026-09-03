@@ -227,10 +227,70 @@ export default [
   // Response is exactly what an HTML page is returned as too. The discriminator
   // is whether the string is ever parsed as HTML, and only a human knows that.
   // ---------------------------------------------------------------------------
+  //
+  // ── THIS REPO'S DECLARATION ────────────────────────────────────────────────
+  //
+  // 12 sites, 13 findings. The extra finding is src/cli.ts:1435, which puts two
+  // JSON.stringify calls in one template literal. Counted by RUNNING the rule,
+  // not by grep: this config was applied to `**/*.ts` through a scratch config
+  // carrying a TypeScript parser, and the 13 nodes collapse to 12 file:line
+  // sites — matching the count tgwab-standards records for this repo.
+  //
+  //   src/cli.ts                              8 sites. Seven are `--json` mode
+  //                                           writing to process.stdout (240,
+  //                                           284, 290, 574, 591, 604, 634).
+  //                                           The eighth is 1435, an AppleScript
+  //                                           string handed to `osascript -e`,
+  //                                           where JSON.stringify is doing the
+  //                                           QUOTING, not serializing a payload
+  //                                           — and it is the two calls on that
+  //                                           one line.
+  //   src/scripts/check-claude-desktop.ts     1 site (164): `--json` status to
+  //                                           stdout.
+  //   src/scripts/install-claude-desktop.ts   2 sites: 306 writes the Claude
+  //                                           Desktop JSON config to disk; 322
+  //                                           is `--json` result to stdout.
+  //   src/services/audit-service.ts           1 site (32): one NDJSON record
+  //                                           appended to the audit log.
+  //
+  // None of the four reasons reaches a browser. This is an MCP server and a CLI
+  // and renders no HTML anywhere — which is also why §15 does not require the
+  // rule here at all. It is carried because the estate config is adopted whole,
+  // and a declaration is cheaper to review than an absence.
+  //
+  // WHY THIS STAYS COMMENTED, AGAINST THE TEMPLATE'S OWN INSTRUCTION. The block
+  // above says an adopting repo "uncomments this block". MEASURED: doing that in
+  // a TypeScript repo BREAKS `npm run lint`. A flat-config object with `files:
+  // ['src/cli.ts']` does not merely scope a rule — it adds those paths to the
+  // set ESLint lints. With no TypeScript parser installed the four files fail to
+  // parse, and the run goes from 25 files / 0 errors to 29 files / 4 errors:
+  //
+  //     src/cli.ts:12:13                       Parsing error: Unexpected token {
+  //     src/scripts/check-claude-desktop.ts    Parsing error: Unexpected token interface
+  //     src/scripts/install-claude-desktop.ts  Parsing error: Unexpected token interface
+  //     src/services/audit-service.ts:3:13     Parsing error: Unexpected token {
+  //
+  // DS §15's normative text says "record the exemption as a COMMENTED override
+  // … naming every path and its reason", so the commented form is what the
+  // standard actually asks for and it is what is written above. The template's
+  // "uncomments this block" is the line that is wrong, and only in repos whose
+  // exempt paths are not `.js`. Reported upstream rather than worked around.
+  //
+  // DO NOT READ THIS AS "these 12 sites were linted and waived." They have never
+  // been linted. The §15 rule is scoped `**/*.js`; this repo contains zero `.js`
+  // files, so the rule matches nothing here and `npm run lint` covers the 24
+  // `.mjs` files and this config only. The 24 `.ts` files that ARE the product
+  // are not linted by anything in this repo. That is a live gap, recorded in the
+  // PR that added this file, and it is a change to the STANDARD's glob rather
+  // than something to patch locally.
+  // ───────────────────────────────────────────────────────────────────────────
+  //
   // {
   //   files: [
-  //     'src/cli/output.js',      // --json mode writes to stdout, never a page
-  //     'src/config/write.js',    // JSON config file on disk
+  //     'src/cli.ts',                            // --json stdout ×7, osascript quoting ×1
+  //     'src/scripts/check-claude-desktop.ts',   // --json status to stdout
+  //     'src/scripts/install-claude-desktop.ts', // JSON config write; --json stdout
+  //     'src/services/audit-service.ts',         // NDJSON audit append
   //   ],
   //   rules: { 'no-restricted-syntax': 'off' },
   // },

@@ -25,11 +25,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # DS §15: the audit gate MUST be scoped to the production tree. Gating on
+      # the full dev tree means a dev-only advisory fails CI for a risk that is
+      # never shipped -- and this repo just grew a large dev tree (ESLint), so
+      # the unscoped form would have started failing for the wrong reason.
       - name: Audit dependencies
-        run: npm audit --audit-level=high
+        run: npm audit --omit=dev --audit-level=high
 
-      - name: Lint types
+      # These were ONE step named "Lint types" running `tsc --noEmit`. Honest
+      # naming, but the DS §15 gate reads the `lint` script and cannot tell a
+      # type check from a linter. Now they are two steps that do what they say.
+      - name: Lint
         run: npm run lint
+
+      - name: Type-check
+        run: npm run typecheck
 
       - name: Run test suite
         run: npm test
