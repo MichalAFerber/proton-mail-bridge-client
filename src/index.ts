@@ -4394,10 +4394,7 @@ export function createServer(
         }
 
         case "folder_stats": {
-          const result = await imapService.getFolderStats(
-            optionalString(args, "folder"),
-            typeof args.scanLimit === "number" ? args.scanLimit : undefined,
-          );
+          const result = await imapService.getFolderStats(optionalString(args, "folder"));
           return createTextResult(result);
         }
 
