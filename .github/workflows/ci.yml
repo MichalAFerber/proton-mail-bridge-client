@@ -25,13 +25,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # DS §15: the audit gate MUST be scoped to the production tree. Gating on
-      # the full dev tree means a dev-only advisory fails CI for a risk that is
-      # never shipped -- and this repo just grew a large dev tree (ESLint), so
-      # the unscoped form would have started failing for the wrong reason.
-      - name: Audit dependencies
-        run: npm audit --omit=dev --audit-level=high
-
       # These were ONE step named "Lint types" running `tsc --noEmit`. Honest
       # naming, but the DS §15 gate reads the `lint` script and cannot tell a
       # type check from a linter. Now they are two steps that do what they say.
@@ -43,3 +36,24 @@ jobs:
 
       - name: Run test suite
         run: npm test
+
+      # AUDIT RUNS LAST, AND THE ORDER IS THE POINT.
+      #
+      # It was second, and the first real run proved why that is wrong: one
+      # transitive advisory (fast-uri, via @modelcontextprotocol/sdk -> ajv)
+      # failed the job and SKIPPED Lint, Type-check, and all 117 tests. Six
+      # matrix jobs reported nothing about this repo's own source because of a
+      # vulnerability in someone else's package.
+      #
+      # An advisory in a dependency and an error in our source are different
+      # questions. Ordering the slowest-to-fix one first means a single red step
+      # costs four pieces of information instead of one. Last, the job still
+      # fails -- the gate is not weakened, `--audit-level=high` still stands --
+      # and you learn everything on the way there.
+      #
+      # DO NOT move this back above the gates, and do not reach for
+      # `continue-on-error` or a lower audit level to get green. A real advisory
+      # SHOULD hold the build red (DS §15); it just must not be the reason three
+      # other gates never report.
+      - name: Audit dependencies
+        run: npm audit --omit=dev --audit-level=high
