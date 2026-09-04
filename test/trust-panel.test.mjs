@@ -62,5 +62,5 @@ test("headerString detects a Disposition-Notification-To header for read-receipt
 
   const withoutReceipt = { subject: "Test" };
   assert.equal(headerString(withoutReceipt, "disposition-notification-to"), undefined);
-  assert.ok(!Boolean(headerString(withoutReceipt, "disposition-notification-to")));
+  assert.ok(!headerString(withoutReceipt, "disposition-notification-to"));
 });

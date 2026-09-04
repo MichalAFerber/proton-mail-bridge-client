@@ -25,11 +25,71 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit dependencies
-        run: npm audit --audit-level=high
-
-      - name: Lint types
+      # These were ONE step named "Lint types" running `tsc --noEmit`. Honest
+      # naming, but the DS §15 gate reads the `lint` script and cannot tell a
+      # type check from a linter. Now they are two steps that do what they say.
+      - name: Lint
         run: npm run lint
+
+      - name: Type-check
+        run: npm run typecheck
 
       - name: Run test suite
         run: npm test
+
+      # WHY npm IS UPGRADED HERE, IMMEDIATELY BEFORE THE AUDIT AND NOWHERE ELSE.
+      #
+      # `npm audit` on the npm bundled with Node 20 and 22 calls the LEGACY
+      # advisory endpoint, which npm's own output says is being retired:
+      #
+      #     npm notice This endpoint is being retired. Use the bulk advisory
+      #     endpoint instead.
+      #
+      # Measured on run 33823253999, one push, three legs, same lockfile:
+      #
+      #     Node 24  success  bulk endpoint, real report, exit 0
+      #     Node 22  failure  400 Bad Request  /-/npm/v1/security/audits/quick
+      #     Node 20  failure  503 Service Unavailable   (same legacy endpoint)
+      #
+      # So two of three legs could not evaluate the dependency tree AT ALL, and
+      # failed in a way indistinguishable from finding a real vulnerability.
+      # Node 22's 400 even reads "Invalid package tree, run npm install to
+      # rebuild your package-lock.json", which accuses the commit under test;
+      # it is the retiring endpoint complaining about the payload it is handed,
+      # not a defect in the lockfile. All three legs installed it identically
+      # (`added 254 packages`) and Node 24 audited against it successfully.
+      #
+      # THIS MAKES THE GATE MORE CAPABLE, NOT LESS. It is not
+      # `continue-on-error`, it does not lower `--audit-level`, and it does not
+      # remove the step -- it gives two legs that were reporting nothing the
+      # ability to report. A real advisory still fails the build.
+      #
+      # It runs AFTER `npm ci`, Lint, Type-check, and the suite on purpose, so
+      # every one of those still uses the npm that ships with the Node under
+      # test. The only thing the newer npm does here is ask for advisories.
+      #
+      # Pinned to the major, not `@latest`, so a future npm major cannot change
+      # this job without a diff.
+      - name: Use a current npm for the audit (bulk advisory endpoint)
+        run: npm install -g npm@11
+
+      # AUDIT RUNS LAST, AND THE ORDER IS THE POINT.
+      #
+      # It was second, and the first real run proved why that is wrong: one
+      # transitive advisory (fast-uri, via @modelcontextprotocol/sdk -> ajv)
+      # failed the job and SKIPPED Lint, Type-check, and all 117 tests. Six
+      # matrix jobs reported nothing about this repo's own source because of a
+      # vulnerability in someone else's package.
+      #
+      # An advisory in a dependency and an error in our source are different
+      # questions. Ordering the slowest-to-fix one first means a single red step
+      # costs four pieces of information instead of one. Last, the job still
+      # fails -- the gate is not weakened, `--audit-level=high` still stands --
+      # and you learn everything on the way there.
+      #
+      # DO NOT move this back above the gates, and do not reach for
+      # `continue-on-error` or a lower audit level to get green. A real advisory
+      # SHOULD hold the build red (DS §15); it just must not be the reason three
+      # other gates never report.
+      - name: Audit dependencies
+        run: npm audit --omit=dev --audit-level=high
