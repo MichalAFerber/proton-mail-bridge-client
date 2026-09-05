@@ -519,7 +519,14 @@ export function normalizeMailboxLabel(value?: string): string | undefined {
  */
 export function renderMarkdown(markdown: string): { html: string; text: string } {
   function escHtml(s: string): string {
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    // Quotes too: the link path interpolates the URL into href="…". Leaving
+    // " unescaped lets an allowlisted https: URL close the attribute.
+    return s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 
   // Protect fenced code blocks from inline processing
@@ -536,8 +543,8 @@ export function renderMarkdown(markdown: string): { html: string; text: string }
     return `\x00IC${inlineCodes.length - 1}\x00`;
   });
 
-  // Escape remaining HTML
-  html = html.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // Escape remaining HTML (same set as escHtml, including quotes for href)
+  html = escHtml(html);
 
   // Process block-level elements line by line
   const lines = html.split("\n");
