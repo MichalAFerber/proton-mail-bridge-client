@@ -50,3 +50,33 @@ test("renderMarkdown escapes fenced code content", () => {
   assert.match(html, /<pre><code>&lt;script&gt;alert\(1\)&lt;\/script&gt;<\/code><\/pre>/);
   assert.equal(/<script>/.test(html), false);
 });
+
+// The three tests above prove the escape closes the hole. This one proves it did
+// not close the door on legitimate output: an escaper that mangles ordinary prose
+// gets reverted, and the hole comes back with it.
+test("renderMarkdown still renders ordinary markdown after the quote escape", () => {
+  const { html } = renderMarkdown(
+    [
+      "# Title",
+      "Plain **bold**, *italic*, and It's fine — Tom & Jerry.",
+      "> quoted line",
+      "- one",
+      "- two",
+      "A [link](https://example.com/path?a=1&b=2) inline.",
+    ].join("\n"),
+  );
+
+  assert.match(html, /<h1>Title<\/h1>/);
+  assert.match(html, /<strong>bold<\/strong>/);
+  assert.match(html, /<em>italic<\/em>/);
+  assert.match(html, /<blockquote>quoted line<\/blockquote>/);
+  assert.match(html, /<ul>\n<li>one<\/li>\n<li>two<\/li>\n<\/ul>/);
+
+  // The href is intact and single-escaped: & became &amp; exactly once.
+  assert.match(html, /<a href="https:\/\/example\.com\/path\?a=1&amp;b=2">link<\/a>/);
+  assert.equal(html.includes("&amp;amp;"), false);
+
+  // An apostrophe is entity-encoded, not dropped or doubled.
+  assert.match(html, /It&#39;s fine/);
+  assert.equal(html.includes("&amp;#39;"), false);
+});
