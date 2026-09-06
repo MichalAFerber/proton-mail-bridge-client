@@ -86,7 +86,7 @@ export default [
       // fixture: ESLint returns one "File ignored" warning and no findings, so
       // `flaggedCases()` is `[]` and BOTH assertions go RED — `toEqual([case1
       // ..case5])` and `toContain('case1')`. THE TEST FAILS LOUDLY. Measured
-      // 2026-09-05 on eslint@10.10.0 against this config: the underscored path
+      // 2026-09-05 on eslint@10.9.1 against this config: the underscored path
       // reports 5 cases and both assertions green; the renamed path reports 0.
       //
       // THIS COMMENT SAID "the test goes green reporting zero findings" UNTIL
