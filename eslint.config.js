@@ -82,9 +82,31 @@ export default [
       // DO NOT rename the test's synthetic lint path to match this pattern. The
       // test lints the fixture's TEXT under `src/__xss-lint-fixture__.js`; the
       // leading and trailing underscores are why this ignore does not swallow
-      // it. Rename it to `src/xss-lint-fixture.js` and the test goes green
-      // reporting zero findings — a control that passes by not running, which
-      // is the exact failure this fixture exists to prevent.
+      // it. Rename it to `src/xss-lint-fixture.js` and this ignore swallows the
+      // fixture: ESLint returns one "File ignored" warning and no findings, so
+      // `flaggedCases()` is `[]` and BOTH assertions go RED — `toEqual([case1
+      // ..case5])` and `toContain('case1')`. THE TEST FAILS LOUDLY. Measured
+      // 2026-09-05 on eslint@10.10.0 against this config: the underscored path
+      // reports 5 cases and both assertions green; the renamed path reports 0.
+      //
+      // THIS COMMENT SAID "the test goes green reporting zero findings" UNTIL
+      // 2026-09-05, and shipped that to eleven adopters — counted in
+      // `eslint.config.{js,mjs}` at each default branch, which is a different
+      // population from the fixture generations. The kit's own test
+      // file had already been corrected; this half had not, so the two halves
+      // of one kit contradicted each other and the wrong half was the one every
+      // adopter reads. The reason to keep the underscores is that the rename
+      // DESTROYS THE MEASUREMENT, not that it hides the failure — a control
+      // that passed by not running is the failure this fixture exists to
+      // prevent, and this one does not do that. Re-derive before editing this
+      // paragraph; it has been wrong once. (DS §15 trap 9.)
+      //
+      // That outcome is WHOLE ADOPTION — a repo carrying this config, so this
+      // ignore is present. A repo that merged the §15 blocks into its own
+      // config need not have it, and there the rename changes nothing: the run
+      // still reports 5 and still passes. `xss-lint-fixture.test.js` carries
+      // the full treatment of both shapes. Read which one you are in before
+      // concluding anything from a rename.
       '**/xss-lint-fixture.js',
     ],
   },
