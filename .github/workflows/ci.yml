@@ -37,6 +37,22 @@ jobs:
       - name: Run test suite
         run: npm test
 
+      # §2 gate: built output MUST be free of runtime code generation. Runs
+      # after the test suite because `npm test` is `npm run build && …`, so
+      # dist/ exists by here — the scan must see the tsc output, not the source.
+      #
+      # Measured clean when this was added: 88 dist files, `eval-free: OK`. It
+      # goes on green because nothing eval-shaped reaches dist, NOT because the
+      # scan is lenient — planting one `new Function(` in dist makes it exit 1.
+      # src/ is clean too, across all 24 .ts files, so there is nothing here
+      # relying on the source-vs-output distinction.
+      #
+      # This package is published to npm (1.19.3 at the time of writing) and
+      # `prepare` runs the build, so the blast radius of an eval reaching dist
+      # is every consumer, not one site.
+      - name: No runtime code generation in built output (§2)
+        run: ./scripts/no-eval.sh dist
+
       # WHY npm IS UPGRADED HERE, IMMEDIATELY BEFORE THE AUDIT AND NOWHERE ELSE.
       #
       # `npm audit` on the npm bundled with Node 20 and 22 calls the LEGACY
