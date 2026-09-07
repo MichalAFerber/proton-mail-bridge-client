@@ -3313,7 +3313,7 @@ export function createServer(
               const scv = await verifySentCopy(imapService, verifyMsgId);
               if (scv.found) sentCopyTokenSend = "[sent-copy:verified]";
             }
-          } catch (_) {}
+          } catch { /* sent-copy verification is best-effort; a failure must not fail the send */ }
 
           return createTextResult({
             messageId: result.messageId,
@@ -3479,7 +3479,7 @@ export function createServer(
               const scv = await verifySentCopy(imapService, verifyMsgId);
               if (scv.found) sentCopyTokenReply = "[sent-copy:verified]";
             }
-          } catch (_) {}
+          } catch { /* sent-copy verification is best-effort; a failure must not fail the send */ }
 
           return createTextResult({
             repliedTo: detail.id,
@@ -3563,7 +3563,7 @@ export function createServer(
               const scv = await verifySentCopy(imapService, verifyMsgId);
               if (scv.found) sentCopyTokenRa = "[sent-copy:verified]";
             }
-          } catch (_) {}
+          } catch { /* sent-copy verification is best-effort; a failure must not fail the send */ }
 
           return createTextResult({
             repliedTo: detailRa.id,
@@ -3669,7 +3669,7 @@ export function createServer(
               const scv = await verifySentCopy(imapService, verifyMsgId);
               if (scv.found) sentCopyTokenFwd = "[sent-copy:verified]";
             }
-          } catch (_) {}
+          } catch { /* sent-copy verification is best-effort; a failure must not fail the send */ }
 
           return createTextResult({
             forwardedMessage: detail.id,
@@ -4119,7 +4119,7 @@ export function createServer(
               const scv = await verifySentCopy(imapService, verifyMsgId);
               if (scv.found) sentCopyTokenDraft = "[sent-copy:verified]";
             }
-          } catch (_) {}
+          } catch { /* sent-copy verification is best-effort; a failure must not fail the send */ }
 
           return createTextResult(
             {
