@@ -317,3 +317,46 @@ export default [
   //   rules: { 'no-restricted-syntax': 'off' },
   // },
 ];
+
+// ---------------------------------------------------------------------------
+// DS §15 DECLARED GAP — why this repo ships the XSS rule and NO fixture.
+//
+// §15 requires a fixture for any repo whose source renders HTML, because a rule
+// only ever shown to pass on clean input has not been shown to fire. This repo
+// does not ship one. This comment is the declaration §15 asks for instead: an
+// absence cannot be reviewed, a declaration can.
+//
+// THIS REPO DOES RENDER HTML. src/services/smtp-service.ts builds an email body
+// (`${htmlBody}<br><br>${escapeHtml(signature)}`) and src/utils/helpers.ts
+// carries the escaping helpers. Both are TypeScript, and so is all 24 files of
+// src/ — this repo ships ZERO product .js.
+//
+// §15 declares .ts/.tsx/.astro an estate-level gap: TypeScript needs a parser,
+// which is a dependency and a decision no single repo takes by editing a glob.
+// So the rule above is wired, passes, and cannot see the source that renders the
+// HTML.
+//
+// MEASURED 2026-09-07, three ways, because "the rule cannot see it" is a claim
+// about an instrument and one probe cannot tell an unreachable file from a rule
+// that never fires:
+//
+//   the §15 hazard in src/__probe.ts   -> eslint exit 0, 0 findings   INVISIBLE
+//   the SAME hazard in src/__probe.js  -> eslint exit 1, 1 finding    CAUGHT
+//   the SAME hazard in src/__probe.mjs -> eslint exit 0, 0 findings   INVISIBLE
+//
+// The middle row is what makes the other two mean something: the rule works, the
+// code is out of reach. Every probe was removed; lint is green on this commit.
+//
+// THE THIRD ROW IS A SEPARATE, SMALLER FINDING and is deliberately NOT fixed
+// here. The rule block above is scoped `files: ['**/*.js']`, the narrow form
+// that tgwab-standards#111 widened to `['**/*.{js,mjs,cjs}']` — so the rule also
+// misses this repo's .mjs, which today is only build tooling and tests. Widening
+// it is a one-word change that may surface real findings, and mixing that into a
+// declaration PR would hide it. Raised, not smuggled.
+//
+// Adding a fixture here would report a confident 5-of-5 through its synthetic
+// src/ path while covering none of the code that renders HTML. That is the
+// vacuous-gate shape §15 spent v2.54.0 through v2.57.0 removing.
+//
+// Tracked in MichalAFerber/tgwab-standards#129.
+// ---------------------------------------------------------------------------
