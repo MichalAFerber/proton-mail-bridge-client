@@ -198,6 +198,27 @@ export default [
   // `no-unused-vars` is swapped for the TS-aware rule: the base rule does not
   // understand type-only imports and measured ~90% phantom findings where it was
   // probed. `no-undef` is off because TypeScript resolves identifiers itself.
+  //
+  // OPTIONS MIRROR THIS REPO'S OWN `.js` RULE ABOVE (`{ caughtErrors: 'none'
+  // }`), NOT THE KIT'S DEFAULT (tgwab-standards#200, v2.82.0). Swapping to a
+  // differently-named rule silently swaps its options too — the block as it
+  // shipped in #9 carried none at all, so `caughtErrors` reverted to ESLint
+  // 9's `'all'` default. Measured on THIS repo, both ways, rather than
+  // assumed from the general defect: every `catch (error) {}` under `src/`
+  // already USES its binding (auditService.record(...), logging, etc.), so
+  // running with the option dropped and with it restored produced the exact
+  // same zero findings either way here — unlike the sibling repos #200 named,
+  // where dropping it did surface unused bindings. Fixed anyway, because the
+  // option's absence is latent, not merely inert: the next `catch (e) {}`
+  // added without a use is what it protects against, and it is the drop
+  // itself that is wrong regardless of whether this repo happens to have a
+  // live case today.
+  //
+  // The kit's own default ALSO adds `argsIgnorePattern`/`varsIgnorePattern:
+  // '^_'`, which this repo's `.js` rule does not carry — copying that in
+  // would loosen this block past what `.js` enforces, the same defect in the
+  // permissive direction. Matched exactly instead (tgwab-account#76 is the
+  // other repo that took this same "mirror, don't inherit" reading).
   // ---------------------------------------------------------------------------
   {
     files: ['**/*.{ts,tsx}'],
@@ -207,7 +228,7 @@ export default [
       ...js.configs.recommended.rules,
       'no-undef': 'off',
       'no-unused-vars': 'off',
-      '@typescript-eslint/no-unused-vars': 'error',
+      '@typescript-eslint/no-unused-vars': ['error', { caughtErrors: 'none' }],
       ...XSS_RULE,
     },
   },
@@ -407,11 +428,21 @@ export default [
 // findings. The concern that it "may surface real findings" was the right
 // concern and the answer is no.
 //
-// NO FIXTURE IS SHIPPED, AND THAT PART OF THE DECLARATION STANDS. A fixture
-// would report a confident 5-of-5 through its synthetic src/ path while proving
-// nothing about this repo's own code. What replaces it here is a live control:
-// the §15 hazard planted in a real `.ts` file under src/ now fails `npm run
-// lint`, which is the thing a fixture was standing in for.
+// THE "NO FIXTURE IS SHIPPED" HALF ABOVE HAS ALSO BEEN SUPERSEDED, BY A LATER
+// CHANGE THAN THIS ONE (tgwab-standards#125). It said a fixture "would report
+// a confident 5-of-5 through its synthetic src/ path while proving nothing
+// about this repo's own code" — true of the fixture's first two assertions
+// alone, and it is why they were declined here. It was NOT true of the third:
+// `test/xss-lint-fixture.test.js` also asserts the rule resolves for every
+// file this repo NAMES in `test/fixtures/xss-lint-covers.json` — a REAL path
+// on disk, not the synthetic one — which is exactly the live control this
+// paragraph described, except run on every `npm test` instead of once by hand
+// and reverted. That distinction is the whole reason the fixture exists: the
+// three-probe table above proved the mechanism ONCE, during this PR's review;
+// the covers check proves it EVERY run, including the next config edit nobody
+// thinks to re-probe. `xss-lint-covers.json` names `src/services/smtp-service.ts`
+// — the file cited two paragraphs up — so the fixture now ships, and it is a
+// control on the real file, not a decoration on a path nothing reaches.
 //
-// Tracked in MichalAFerber/tgwab-standards#129 and #169.
+// Tracked in MichalAFerber/tgwab-standards#125, #129, and #169.
 // ---------------------------------------------------------------------------

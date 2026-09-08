@@ -1,0 +1,15 @@
+{
+  "_comment": [
+    "DS §15 — this repo's declaration of what the XSS rule covers.",
+    "Product source only: code that runs for a user.",
+    "",
+    "src/services/smtp-service.ts builds the outgoing email body:",
+    "`${htmlBody}<br><br>${escapeHtml(signature)}` — the one place this repo",
+    "renders HTML for a real recipient. Reachable only since #9 added the",
+    "TypeScript parser block; before that the rule was wired, green, and",
+    "could not see a single .ts file, which is what #7's now-superseded",
+    "declared gap was about (see the trailing comment in eslint.config.js)."
+  ],
+  "covers": ["src/services/smtp-service.ts"],
+  "why": "builds the HTML email body sent to a real recipient — appends the signature after escaping it, the one HTML-rendering site in this repo"
+}
