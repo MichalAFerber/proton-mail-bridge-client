@@ -45,6 +45,21 @@
 
 import js from '@eslint/js';
 import globals from 'globals';
+import tseslint from 'typescript-eslint';
+
+// The §15 rule object, defined ONCE and reused by the TypeScript block below.
+// Same shape as tgwab-standards templates/eslint.config.js (v2.72.0).
+const XSS_RULE = {
+  'no-restricted-syntax': [
+    'error',
+    {
+      selector:
+        'TemplateLiteral CallExpression[callee.object.name="JSON"][callee.property.name="stringify"]',
+      message:
+        'Do not interpolate JSON.stringify into a template literal — a value containing "</script>" closes the tag and becomes markup. Pass it through a data attribute and JSON.parse it on the client (DS §15).',
+    },
+  ],
+};
 
 export default [
   // ---------------------------------------------------------------------------
@@ -168,17 +183,32 @@ export default [
   // findings looks exactly like success.
   // ---------------------------------------------------------------------------
   {
-    files: ['**/*.js'],
+    files: ['**/*.{js,mjs,cjs}'],
+    rules: { ...XSS_RULE },
+  },
+
+  // ---------------------------------------------------------------------------
+  // TYPESCRIPT — adopted from tgwab-standards templates/eslint.config.js
+  // (v2.72.0, DS §15). This repo ships ZERO product `.js`: all 24 files under
+  // src/ are TypeScript, including src/services/smtp-service.ts, which builds an
+  // email body, and src/utils/helpers.ts, which carries the escaping helpers. So
+  // before this block the §15 rule was wired, green, and could not see one line
+  // of the code that renders HTML.
+  //
+  // `no-unused-vars` is swapped for the TS-aware rule: the base rule does not
+  // understand type-only imports and measured ~90% phantom findings where it was
+  // probed. `no-undef` is off because TypeScript resolves identifiers itself.
+  // ---------------------------------------------------------------------------
+  {
+    files: ['**/*.{ts,tsx}'],
+    languageOptions: { parser: tseslint.parser },
+    plugins: { '@typescript-eslint': tseslint.plugin },
     rules: {
-      'no-restricted-syntax': [
-        'error',
-        {
-          selector:
-            'TemplateLiteral CallExpression[callee.object.name="JSON"][callee.property.name="stringify"]',
-          message:
-            'Do not interpolate JSON.stringify into a template literal — a value containing "</script>" closes the tag and becomes markup. Pass it through a data attribute and JSON.parse it on the client (DS §15).',
-        },
-      ],
+      ...js.configs.recommended.rules,
+      'no-undef': 'off',
+      'no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': 'error',
+      ...XSS_RULE,
     },
   },
 
@@ -316,47 +346,72 @@ export default [
   //   ],
   //   rules: { 'no-restricted-syntax': 'off' },
   // },
+  // ---------------------------------------------------------------------------
+  // §15 XSS RULE — DECLARED EXEMPTIONS. Non-browser sinks only.
+  //
+  // The rule exists because a value containing `</script>` closes the tag and
+  // becomes markup. That hazard needs a string that is eventually parsed as HTML.
+  // None of these are: they are a terminal, a file on disk, and an append-only
+  // log. `process.stdout` is not markup.
+  //
+  // MEASURED, not assumed — every site was opened and classified, and the count
+  // is 13 across FOUR files, not 12 in one as the kit's worked example says:
+  //
+  //   src/cli.ts                            9  `#!/usr/bin/env node`; process.stdout.write
+  //                                            in --json mode
+  //   src/scripts/install-claude-desktop.ts  2  one writeFile() of a JSON config to
+  //                                            disk, one process.stdout.write
+  //   src/scripts/check-claude-desktop.ts    1  process.stdout.write
+  //   src/services/audit-service.ts          1  appendFile() of an NDJSON audit line
+  //
+  // One line per reason, per §15. If a file here ever renders HTML, it leaves
+  // this list rather than gaining an inline disable.
+  // ---------------------------------------------------------------------------
+  {
+    files: [
+      'src/cli.ts',
+      'src/scripts/install-claude-desktop.ts',
+      'src/scripts/check-claude-desktop.ts',
+      'src/services/audit-service.ts',
+    ],
+    rules: { 'no-restricted-syntax': 'off' },
+  },
 ];
 
 // ---------------------------------------------------------------------------
-// DS §15 DECLARED GAP — why this repo ships the XSS rule and NO fixture.
+// DS §15 — THE GAP THIS FILE USED TO DECLARE IS NOW CLOSED.
 //
-// §15 requires a fixture for any repo whose source renders HTML, because a rule
-// only ever shown to pass on clean input has not been shown to fire. This repo
-// does not ship one. This comment is the declaration §15 asks for instead: an
-// absence cannot be reviewed, a declaration can.
+// Until this change the block above was scoped `files: ['**/*.js']` and this
+// repo shipped ZERO product `.js`: all 24 files under src/ are TypeScript,
+// including src/services/smtp-service.ts, which builds an email body
+// (`${htmlBody}<br><br>${escapeHtml(signature)}`), and src/utils/helpers.ts,
+// which carries the escaping helpers. The rule was wired, green, and could not
+// see one line of the code that renders HTML.
 //
-// THIS REPO DOES RENDER HTML. src/services/smtp-service.ts builds an email body
-// (`${htmlBody}<br><br>${escapeHtml(signature)}`) and src/utils/helpers.ts
-// carries the escaping helpers. Both are TypeScript, and so is all 24 files of
-// src/ — this repo ships ZERO product .js.
-//
-// §15 declares .ts/.tsx/.astro an estate-level gap: TypeScript needs a parser,
-// which is a dependency and a decision no single repo takes by editing a glob.
-// So the rule above is wired, passes, and cannot see the source that renders the
-// HTML.
-//
-// MEASURED 2026-09-07, three ways, because "the rule cannot see it" is a claim
-// about an instrument and one probe cannot tell an unreachable file from a rule
-// that never fires:
+// The declaration that stood here was correct and is preserved as the record of
+// how it was established — three probes, because "the rule cannot see it" is a
+// claim about an instrument and one probe cannot tell an unreachable file from a
+// rule that never fires:
 //
 //   the §15 hazard in src/__probe.ts   -> eslint exit 0, 0 findings   INVISIBLE
 //   the SAME hazard in src/__probe.js  -> eslint exit 1, 1 finding    CAUGHT
 //   the SAME hazard in src/__probe.mjs -> eslint exit 0, 0 findings   INVISIBLE
 //
-// The middle row is what makes the other two mean something: the rule works, the
-// code is out of reach. Every probe was removed; lint is green on this commit.
+// The middle row is what made the other two mean something. All three are now
+// CAUGHT: the TypeScript block above gives the rule a parser, and the `.js`
+// block was widened to `{js,mjs,cjs}` in the same change.
 //
-// THE THIRD ROW IS A SEPARATE, SMALLER FINDING and is deliberately NOT fixed
-// here. The rule block above is scoped `files: ['**/*.js']`, the narrow form
-// that tgwab-standards#111 widened to `['**/*.{js,mjs,cjs}']` — so the rule also
-// misses this repo's .mjs, which today is only build tooling and tests. Widening
-// it is a one-word change that may surface real findings, and mixing that into a
-// declaration PR would hide it. Raised, not smuggled.
+// THE .mjs WIDENING WAS THE "THIRD ROW", RAISED HERE AND DELIBERATELY LEFT.
+// It is fixed now because it was measured to be free: widening the glob newly
+// lints 24 `.mjs` files (scripts/build-mcpb.mjs and 23 tests) and reports ZERO
+// findings. The concern that it "may surface real findings" was the right
+// concern and the answer is no.
 //
-// Adding a fixture here would report a confident 5-of-5 through its synthetic
-// src/ path while covering none of the code that renders HTML. That is the
-// vacuous-gate shape §15 spent v2.54.0 through v2.57.0 removing.
+// NO FIXTURE IS SHIPPED, AND THAT PART OF THE DECLARATION STANDS. A fixture
+// would report a confident 5-of-5 through its synthetic src/ path while proving
+// nothing about this repo's own code. What replaces it here is a live control:
+// the §15 hazard planted in a real `.ts` file under src/ now fails `npm run
+// lint`, which is the thing a fixture was standing in for.
 //
-// Tracked in MichalAFerber/tgwab-standards#129.
+// Tracked in MichalAFerber/tgwab-standards#129 and #169.
 // ---------------------------------------------------------------------------

@@ -900,7 +900,8 @@ export class SimpleIMAPService {
         // UID order does not track date order (e.g. after a cross-provider import),
         // so a naive slice(-limit) on UIDs can silently drop the newest messages.
         // Fetch cheap INTERNALDATE-only headers first, sort by date, then pick the target UIDs.
-        let targetUids = uids;
+        // No initializer: both branches below assign, so `= uids` was dead.
+        let targetUids: number[];
         if (uids.length > limit) {
           const dated: { uid: number; date: number }[] = [];
           for await (const message of client.fetch(uids, FETCH_INDEX_QUERY, { uid: true })) {

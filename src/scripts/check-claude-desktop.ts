@@ -59,6 +59,7 @@ function parseCliArgs(argv: string[]): { configPath?: string; serverName?: strin
           ].join("\n"),
         );
         process.exit(0);
+        // eslint-disable-next-line no-fallthrough -- process.exit(0) above never returns; base no-fallthrough has no type info
       default:
         throw new Error(`Unknown argument: ${token}`);
     }
