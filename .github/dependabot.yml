@@ -1,0 +1,26 @@
+# TGWAB dependency updates — DEV-STANDARDS §15.
+#
+# github-actions ecosystem only, scoped to tgwab-standards#125 item 2 (pinned
+# actions need an updater or the pin is a one-time act nobody owns). An npm
+# ecosystem entry is a separate decision for this repo and out of scope here.
+#
+# Grouping caps a normal week at ~3 PRs instead of one per package; ungrouped
+# Dependabot is how automated updates get muted and then ignored.
+
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/New_York
+    open-pull-requests-limit: 2
+    labels: [dependencies]
+    commit-message:
+      prefix: "chore(actions)"
+    groups:
+      actions:
+        patterns: ["*"]
