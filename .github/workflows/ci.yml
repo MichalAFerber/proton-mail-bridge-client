@@ -109,3 +109,21 @@ jobs:
       # other gates never report.
       - name: Audit dependencies
         run: npm audit --omit=dev --audit-level=high
+
+  # The main ruleset requires the status-check context `ci` (DS §4). The matrix
+  # above reports as `test (20)`, `test (22)`, and `test (24)`, never as `ci`.
+  # `if: always()` matters: GitHub counts a skipped job as passing a required
+  # check, so without it a failed leg would skip this job and let the merge through.
+  ci:
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Every test leg passed
+        env:
+          RESULT: ${{ needs.test.result }}
+        run: |
+          echo "test matrix result: $RESULT"
+          test "$RESULT" = success
