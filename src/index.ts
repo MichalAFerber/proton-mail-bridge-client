@@ -4089,9 +4089,9 @@ export function createServer(
 
           let sentDraft = await draftStore.markSent(draft.id, {
             messageId: result.messageId,
-            accepted: result.accepted,
-            rejected: result.rejected,
-            response: result.response,
+            accepted: result.accepted ?? [],
+            rejected: result.rejected ?? [],
+            response: result.response ?? "",
           });
           const remoteCleanup = resolveRemoteDraftSync(config.runtime, true).enabled
             ? await clearRemoteDraft(draftStore, imapService, sentDraft)

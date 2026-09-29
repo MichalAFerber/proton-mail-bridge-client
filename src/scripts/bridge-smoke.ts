@@ -338,9 +338,9 @@ async function main(): Promise<void> {
 
       sentComposeDraft = await draftStore.markSent(syncedComposeDraft.id, {
         messageId: composeSend.messageId,
-        accepted: composeSend.accepted,
-        rejected: composeSend.rejected,
-        response: composeSend.response,
+        accepted: composeSend.accepted ?? [],
+        rejected: composeSend.rejected ?? [],
+        response: composeSend.response ?? "",
       });
       if (sentComposeDraft.remoteDraft?.emailId) {
         await imapService.deleteRemoteDraft(sentComposeDraft.remoteDraft.emailId);
